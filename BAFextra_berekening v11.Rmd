@@ -1,0 +1,813 @@
+---
+title: "Flanders metrics"
+author: "Kelly Wittemans"
+date: "2025-08-14"
+output: html_document
+---
+
+## Preparation
+
+```{r}
+#0# Workspace opruimen
+rm(list=ls())
+```
+
+```{r}
+#1# Installeer libraries 
+#install.packages(c("rpostgis","raster","rgdal","dplyr","RSAGA","httr","sf","sp","fasterize", "sqldf", #"ncdf4","exactextractr","landscapemetrics"))
+#install.packages("doParallel")
+#install.packages("foreach")
+```
+
+```{r}
+#2# Activeer libraries
+#library(rpostgis)
+library(raster)
+#library(rgdal)
+library(dplyr)
+#library(RSAGA)
+library(httr)
+library(sf)
+library(sp)
+library(fasterize)
+library(sqldf)
+library(ncdf4)
+library(exactextractr)
+library(doParallel)
+library(foreach)
+#load packages
+library(landscapemetrics)
+library(stringr)
+```
+
+```{r}
+#setwd("//tsclient/C/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/Input")
+```
+
+```{r}
+#if parallel 
+#n_cores <- 5  
+#cl <- makeCluster(n_cores)
+#registerDoParallel(cl)
+```
+
+
+```{r}
+BBK <- 'BBK_15'
+```
+
+```{r}
+#2# datasets inladen
+temp <- tempfile()
+tempd <- tempdir()
+#andere folder zitten en die moet je eerst verplaatsen naar de juiste folder. 
+tempd <- paste0("H:/WP3/Input/BBK/", BBK,"/")
+rasters1 <- list.files(path=file.path(tempd),  pattern="\\.tif$")
+directory1 <- file.path(tempd)
+unlink(tempd) 
+
+adp_0 <- st_read("H:/WP3/Input/Adp/Adp.shp") 
+adp_1 <- st_read("H:/WP3/Input/Adp/Adp_1.shp") 
+adp <- rbind(adp_0, adp_1)
+rm(adp_0, adp_1)
+
+TWI <- raster('H:/WP3/Input/TWI/TWI_Quinn_vlaanderen_filled_sinksPlanchon.tif')
+#Q3 bepalen
+#TWI_Flanders_Q3 <- quantile(TWI_Flanders, 0.75)
+#13.9
+TWI <- setMinMax(TWI)
+TWI_Flanders_max <- maxValue(TWI)
+TWI_Flanders_max <- 17.5
+TWI_Flanders_min <- minValue(TWI)
+TWI_Flanders_min <- 6.28
+
+#TWI <- raster('G:/WP3/Input/TWI/TWI_Flanders_clipped.tif')
+#q_low_TWI <- quantile(TWI, 0.05, na.rm = TRUE)
+#q_high_TWI <- quantile(TWI, 0.95, na.rm = TRUE)
+
+
+#LCZ_Leuven <- raster('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/4. #Projecten/Eva/LCZ/pred_LCZ_100m_modal3x3_v4.tif')
+#LCZ <- raster('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. #Onderzoek/WP3/Input/lcz_filter_v3.tif')
+
+LST <- raster('H:/WP3/Input/LST/LST_Flanders.tif')
+LST[LST < 0] <- NA
+LST_Flanders_max <- maxValue(LST)
+LST_Flanders_max <- 38.7
+LST_Flanders_min <- minValue(LST)
+LST_Flanders_min <- 24.3
+  
+#LST <- raster('G:/WP3/Input/LST/LST_Flanders_clipped.tif')
+#q_low_LST <- quantile(LST, 0.05, na.rm = TRUE)
+#q_high_LST <- quantile(LST, 0.95, na.rm = TRUE)
+
+#Q3 bepalen
+#LST_Flanders_Q3 <- quantile(LST_Flanders, 0.75)
+#31.7
+
+Vulnerability <- st_read('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/gardens_vulnerability_quantile_scaled_Flanders.shp')
+
+exposure <- raster('H:/WP3/Input/Pop/ni_inw_ha_vlaa_2019.tif')
+
+# Define min and max of exposure raster (or across your study area)
+exp_min <- min(values(exposure), na.rm = TRUE)
+exp_min <- 0
+exp_max <- max(values(exposure), na.rm = TRUE)
+exp_max <- 244
+
+#exposure <- raster('G:/WP3/Input/Pop/ni_inw_ha_vlaa_2013.tif')
+#q_low_exp <- quantile(exposure, 0.05, na.rm = TRUE)
+#q_high_exp <- quantile(exposure, 0.95, na.rm = TRUE)
+```
+
+
+```{r}
+tuinkaarten <- list.files(path=file.path("H:/WP3/Input/Buffers"),  pattern="\\.gpkg$")
+directory2 <- file.path("H:/WP3/Input/Buffers")
+
+for(i in 1:length(tuinkaarten)){
+  for(k in 1:length(rasters1)){
+  
+  groenkaart.raster <- raster(file.path(directory1,rasters1[k]))
+  
+  #groenkaart.raster <- unlist(rast.list[1])
+  
+  tuinenkaart <- st_read(file.path(directory2,tuinkaarten[i]))
+  
+  cities <- str_extract(tuinkaarten[i], ".*(?=ADP)")
+  gbg <- st_read(paste0("H:/WP3/Input/Gbg/", cities,"/gbg.shp"))
+  
+  #not needed for grouped gardens
+  #tuinenkaart <- tuinenkaart %>%
+  #filter(LGK %in% c("Huizen en Tuinen", "Overige bebouwde terreinen", "Overige onbebouwde terreinen"))
+
+  r.raster <- raster()
+  crs(r.raster) <- CRS("+init=epsg:31370")
+  extent(tuinenkaart)
+  extent(r.raster) <- extent(tuinenkaart)
+  res(r.raster) <- 1
+  
+  while (tryCatch(!is.null(crop(groenkaart.raster,extent(r.raster))), error=function(e) return(FALSE))){
+    print(i)
+    print(k)
+ 
+  # Bereken hoeveel van het administratief perceel bedekt is met gebouwen
+  # Koppel de Leuvense administratieve percelenkaart (Adp24062.shp)met de tuinperceelkaart (LeuvenADPgrdns.shp) via de CAPAKEY waarden 
+  tuinenkaart2 <- st_drop_geometry(tuinenkaart) 
+  class(tuinenkaart2)
+  adp_koppel_tuinen <- merge(adp,tuinenkaart2, by="CAPAKEY")
+  adp_koppel_tuinen <- transform(adp_koppel_tuinen, new = (OPPERVL-AREA) / OPPERVL*100)
+  
+  test_groenkaart.raster <- crop(groenkaart.raster, r.raster)
+  
+  # stel de groenkaart samen (stap 1 Sebastiaan Verbesselt)
+  # Maak aparte rasters voor hoog groen, laag groen op basis van de groenkaarten 
+  # 2015 
+  filter_image_HG <- test_groenkaart.raster %in% c(9,12,14)
+  #Merged_GRNKRT_2015_HG <- raster::mask(test_groenkaart.raster, filter_image_HG, maskvalue = 1)
+  filter_image_LG <- test_groenkaart.raster %in% c(7,8,10,11,13)
+  #Merged_GRNKRT_2015_LG <- raster::mask(test_groenkaart.raster, filter_image_LG, maskvalue = 1)
+  filter_image_W <- test_groenkaart.raster %in% 5
+  #Merged_GRNKRT_2015_W <- raster::mask(test_groenkaart.raster, filter_image_W, maskvalue = 1)
+  filter_image_A <- test_groenkaart.raster %in% c(1,2,3,4)
+  #Merged_GRNKRT_2015_A <- raster::mask(test_groenkaart.raster, filter_image_A, maskvalue = 1)
+  filter_image_BS <- test_groenkaart.raster %in% c(6)
+  #Merged_GRNKRT_2015_BS <- raster::mask(test_groenkaart.raster, filter_image_BS, maskvalue = 1)
+ 
+  #adp_koppel_tuinen_buffer50 <-st_buffer(st_centroid(adp_koppel_tuinen), dist=50)
+  #adp_koppel_tuinen_buffer100 <-st_buffer(st_centroid(adp_koppel_tuinen), dist=100)
+  #adp_koppel_tuinen_buffer200 <-st_buffer(st_centroid(adp_koppel_tuinen), dist=200)
+  #adp_koppel_tuinen_buffer400 <-st_buffer(st_centroid(adp_koppel_tuinen), dist=400)
+  
+buffer_target_precise_verbose <- function(polys, target_area, max_steps = 50, tol = 0.01) {
+  polys <- st_make_valid(polys)
+  area_now <- as.numeric(st_area(polys))
+  area_now[area_now <= 0] <- NA
+  
+  # Initiële schatting van bufferafstand
+  scale_factor <- sqrt(target_area / area_now)
+  base_length  <- sqrt(area_now)
+  buffer_dist  <- base_length * (scale_factor - 1)
+  buffer_dist[!is.finite(buffer_dist)] <- 0
+  
+  final_buf <- polys
+  done <- rep(FALSE, length(buffer_dist))
+  
+  cat("=== Vectorized stappen ===\n")
+  for (i in 1:max_steps) {
+    to_update <- which(!done)
+    if (length(to_update) == 0) break
+    
+    polys_buf <- st_buffer(polys[to_update, ], buffer_dist[to_update])
+    area_buf <- as.numeric(st_area(polys_buf))
+    diff_ratio <- sqrt(target_area / area_buf)
+    diff_ratio[!is.finite(diff_ratio)] <- 1
+    buffer_dist[to_update] <- buffer_dist[to_update] * diff_ratio
+    
+    final_buf[to_update, ] <- polys_buf
+    done[to_update] <- abs(area_buf - target_area) / target_area < tol
+    
+    # Print overzicht per tuin
+    overview <- data.frame(
+      tuin = to_update,
+      buffer = round(buffer_dist[to_update], 2),
+      area = round(area_buf, 2),
+      diff = round(area_buf - target_area, 2),
+      binnen_tol = done[to_update]
+    )
+    print(overview)
+    
+    cat("Stap ", i, ": nog ", sum(!done, na.rm = TRUE), " tuinen buiten tolerantie\n\n")
+  }
+  
+  # Pas uniroot toe op afwijkers
+  afwijkers <- which(!done)
+  if (length(afwijkers) > 0) {
+    cat("=== Exact corrigeren met uniroot ===\n")
+    for (idx in afwijkers) {
+      f <- function(d) {
+        as.numeric(st_area(st_buffer(polys[idx, ], d))) - target_area
+      }
+      root <- tryCatch({
+        uniroot(f, interval = c(-1000, 1000))$root
+      }, error = function(e) {
+        NA
+      })
+      if (!is.na(root)) {
+        final_buf[idx, ] <- st_buffer(polys[idx, ], root)
+        cat("Tuin ", idx, ": uniroot buffer =", round(root,2), 
+            ", nieuw oppervlak =", round(as.numeric(st_area(final_buf[idx, ])), 2), "\n")
+      } else {
+        cat("Tuin ", idx, ": uniroot kon geen oplossing vinden\n")
+      }
+    }
+  } else {
+    cat("Alle tuinen binnen tolerantie na vectorized stappen\n")
+  }
+  
+  return(list(buffered = final_buf, afwijkers = afwijkers))
+}
+
+# Run the buffered function for each target area
+result50  <- buffer_target_precise_verbose(adp_koppel_tuinen, target_area = 5000)
+#result100 <- buffer_target_precise_verbose(adp_koppel_tuinen, target_area = 25000)
+#result200 <- buffer_target_precise_verbose(adp_koppel_tuinen, target_area = 100000)
+#result400 <- buffer_target_precise_verbose(adp_koppel_tuinen, target_area = 500000)
+
+# Assign the buffered polygons to the old variable names
+adp_koppel_tuinen_buffer50  <- result50$buffered
+#adp_koppel_tuinen_buffer100 <- result100$buffered
+#adp_koppel_tuinen_buffer200 <- result200$buffered
+#adp_koppel_tuinen_buffer400 <- result400$buffered
+
+  # Bereken het aandeel hoog groen, laag groen en water per administratief perceel
+  ex <- exact_extract(test_groenkaart.raster, adp_koppel_tuinen, 'count')
+  HG <- exact_extract(filter_image_HG, adp_koppel_tuinen, 'sum')
+  LG <- exact_extract(filter_image_LG, adp_koppel_tuinen, 'sum')
+  W <- exact_extract(filter_image_W, adp_koppel_tuinen, 'sum')
+  A <- exact_extract(filter_image_A, adp_koppel_tuinen, 'sum')
+  BS <- exact_extract(filter_image_BS, adp_koppel_tuinen, 'sum')
+  
+  # Bereken het aandeel hoog groen, laag groen en water in de omgeving (100m buffer) administratief perceel
+  sur50 <- exact_extract(test_groenkaart.raster, adp_koppel_tuinen_buffer50, 'count')
+  HGsur50 <- exact_extract(filter_image_HG, adp_koppel_tuinen_buffer50, 'sum')
+  LGsur50 <- exact_extract(filter_image_LG, adp_koppel_tuinen_buffer50, 'sum')
+  Wsur50 <- exact_extract(filter_image_W, adp_koppel_tuinen_buffer50, 'sum')
+  Asur50 <- exact_extract(filter_image_A, adp_koppel_tuinen_buffer50, 'sum')
+  BSsur50 <- exact_extract(filter_image_BS, adp_koppel_tuinen_buffer50, 'sum')
+  
+#  sur100 <- exact_extract(test_groenkaart.raster, adp_koppel_tuinen_buffer100, 'count')
+#  HGsur100 <- exact_extract(filter_image_HG, adp_koppel_tuinen_buffer100, 'sum')
+#  LGsur100 <- exact_extract(filter_image_LG, adp_koppel_tuinen_buffer100, 'sum')
+#  Wsur100 <- exact_extract(filter_image_W, adp_koppel_tuinen_buffer100, 'sum')
+#  Asur100 <- exact_extract(filter_image_A, adp_koppel_tuinen_buffer100, 'sum')
+#  BSsur100 <- exact_extract(filter_image_BS, adp_koppel_tuinen_buffer100, 'sum')
+  
+#  sur200 <- exact_extract(test_groenkaart.raster, adp_koppel_tuinen_buffer200, 'count')
+#  HGsur200 <- exact_extract(filter_image_HG, adp_koppel_tuinen_buffer200, 'sum')
+#  LGsur200 <- exact_extract(filter_image_LG, adp_koppel_tuinen_buffer200, 'sum')
+#  Wsur200 <- exact_extract(filter_image_W, adp_koppel_tuinen_buffer200, 'sum')
+#  Asur200 <- exact_extract(filter_image_A, adp_koppel_tuinen_buffer200, 'sum')
+#  BSsur200 <- exact_extract(filter_image_BS, adp_koppel_tuinen_buffer200, 'sum') 
+  
+#  sur400 <- exact_extract(test_groenkaart.raster, adp_koppel_tuinen_buffer400, 'count')
+#  HGsur400 <- exact_extract(filter_image_HG, adp_koppel_tuinen_buffer400, 'sum')
+#  LGsur400 <- exact_extract(filter_image_LG, adp_koppel_tuinen_buffer400, 'sum')
+#  Wsur400 <- exact_extract(filter_image_W, adp_koppel_tuinen_buffer400, 'sum')
+#  Asur400 <- exact_extract(filter_image_A, adp_koppel_tuinen_buffer400, 'sum')
+#  BSsur400 <- exact_extract(filter_image_BS, adp_koppel_tuinen_buffer400, 'sum')
+  
+  test <- ex[ex != 0]
+ 
+  if (length(test)>0){
+  # ex, HG en LG toevoegen aan adp_koppel_tuinen
+  adp_koppel_tuinen$sur50 <- sur50
+  adp_koppel_tuinen$HGsur50 <- HGsur50
+  adp_koppel_tuinen$LGsur50 <- LGsur50
+  adp_koppel_tuinen$Wsur50 <- Wsur50
+  adp_koppel_tuinen$Asur50 <- Asur50
+  adp_koppel_tuinen$BSsur50 <- BSsur50
+  
+  adp_koppel_tuinen$ex  <- ex
+  adp_koppel_tuinen$HG   <- HG
+  adp_koppel_tuinen$LG  <- LG
+  adp_koppel_tuinen$W   <- W
+  adp_koppel_tuinen$A   <- A
+  adp_koppel_tuinen$BS  <- BS
+
+  # Replace original values with buffered values only if buffer is negative (shrinks the garden)
+  neg_buffer <- st_area(adp_koppel_tuinen_buffer50) < st_area(adp_koppel_tuinen)
+
+  adp_koppel_tuinen$ex50  <- ifelse(neg_buffer, sur50, ex)
+  adp_koppel_tuinen$HG50   <- ifelse(neg_buffer, HGsur50, HG)
+  adp_koppel_tuinen$LG50  <- ifelse(neg_buffer, LGsur50, LG)
+  adp_koppel_tuinen$W50   <- ifelse(neg_buffer, Wsur50, W)
+  adp_koppel_tuinen$A50   <- ifelse(neg_buffer, Asur50, A)
+  adp_koppel_tuinen$BS50  <- ifelse(neg_buffer, BSsur50, BS)
+  
+#  adp_koppel_tuinen$sur100 <- sur100
+#  adp_koppel_tuinen$HGsur100 <- HGsur100
+#  adp_koppel_tuinen$LGsur100 <- LGsur100
+#  adp_koppel_tuinen$Wsur100 <- Wsur100
+#  adp_koppel_tuinen$Asur100 <- Asur100
+#  adp_koppel_tuinen$BSsur100 <- BSsur100
+  
+  # Replace original values with buffered values only if buffer is negative (shrinks the garden)
+#  neg_buffer <- st_area(adp_koppel_tuinen_buffer100) < st_area(adp_koppel_tuinen)
+
+#  adp_koppel_tuinen$ex100  <- ifelse(neg_buffer, sur100, ex)
+#  adp_koppel_tuinen$HG100   <- ifelse(neg_buffer, HGsur100, HG)
+#  adp_koppel_tuinen$LG100  <- ifelse(neg_buffer, LGsur100, LG)
+#  adp_koppel_tuinen$W100   <- ifelse(neg_buffer, Wsur100, W)
+#  adp_koppel_tuinen$A100   <- ifelse(neg_buffer, Asur100, A)
+#  adp_koppel_tuinen$BS100  <- ifelse(neg_buffer, BSsur100, BS)
+
+#  adp_koppel_tuinen$sur200 <- sur200
+#  adp_koppel_tuinen$HGsur200 <- HGsur200
+#  adp_koppel_tuinen$LGsur200 <- LGsur200
+#  adp_koppel_tuinen$Wsur200 <- Wsur200
+#  adp_koppel_tuinen$Asur200 <- Asur200
+#  adp_koppel_tuinen$BSsur200 <- BSsur200
+  
+# Replace original values with buffered values only if buffer is negative (shrinks the garden)
+#  neg_buffer <- st_area(adp_koppel_tuinen_buffer200) < st_area(adp_koppel_tuinen)
+
+#  adp_koppel_tuinen$ex200  <- ifelse(neg_buffer, sur200, ex)
+#  adp_koppel_tuinen$HG200   <- ifelse(neg_buffer, HGsur200, HG)
+#  adp_koppel_tuinen$LG200  <- ifelse(neg_buffer, LGsur200, LG)
+#  adp_koppel_tuinen$W200   <- ifelse(neg_buffer, Wsur200, W)
+#  adp_koppel_tuinen$A200   <- ifelse(neg_buffer, Asur200, A)
+#  adp_koppel_tuinen$BS200  <- ifelse(neg_buffer, BSsur200, BS)
+  
+#  adp_koppel_tuinen$sur400 <- sur400
+#  adp_koppel_tuinen$HGsur400 <- HGsur400
+#  adp_koppel_tuinen$LGsur400 <- LGsur400
+#  adp_koppel_tuinen$Wsur400 <- Wsur400
+#  adp_koppel_tuinen$Asur400 <- Asur400
+#  adp_koppel_tuinen$BSsur400 <- BSsur400
+  
+  # Replace original values with buffered values only if buffer is negative (shrinks the garden)
+#  neg_buffer <- st_area(adp_koppel_tuinen_buffer400) < st_area(adp_koppel_tuinen)
+
+#  adp_koppel_tuinen$ex400  <- ifelse(neg_buffer, sur400, ex)
+#  adp_koppel_tuinen$HG400   <- ifelse(neg_buffer, HGsur400, HG)
+#  adp_koppel_tuinen$LG400  <- ifelse(neg_buffer, LGsur400, LG)
+#  adp_koppel_tuinen$W400   <- ifelse(neg_buffer, Wsur400, W)
+#  adp_koppel_tuinen$A400   <- ifelse(neg_buffer, Asur400, A)
+#  adp_koppel_tuinen$BS400  <- ifelse(neg_buffer, BSsur400, BS)
+
+  adp_koppel_tuinen$sur50z <- sur50 - adp_koppel_tuinen$ex50
+  adp_koppel_tuinen$HGsur50z <- HGsur50 - adp_koppel_tuinen$HG50
+  adp_koppel_tuinen$LGsur50z <- LGsur50 - adp_koppel_tuinen$LG50
+  adp_koppel_tuinen$Wsur50z <- Wsur50 - adp_koppel_tuinen$W50
+  adp_koppel_tuinen$Asur50z <- Asur50 - adp_koppel_tuinen$A50
+  adp_koppel_tuinen$BSsur50z <- BSsur50 - adp_koppel_tuinen$BS50
+  
+  adp_koppel_tuinen$HGsur50v <- HGsur50 + adp_koppel_tuinen$LG50 + adp_koppel_tuinen$W50 + adp_koppel_tuinen$A50 + adp_koppel_tuinen$BS50
+  adp_koppel_tuinen$LGsur50v <- LGsur50 - adp_koppel_tuinen$LG50
+  adp_koppel_tuinen$Wsur50v <- Wsur50 - adp_koppel_tuinen$W50
+  adp_koppel_tuinen$Asur50v <- Asur50 - adp_koppel_tuinen$A50
+  adp_koppel_tuinen$BSsur50v <- BSsur50 - adp_koppel_tuinen$BS50
+  
+#  adp_koppel_tuinen$sur100z <- sur100 - adp_koppel_tuinen$ex100
+#  adp_koppel_tuinen$HGsur100z <- HGsur100 - adp_koppel_tuinen$HG100
+#  adp_koppel_tuinen$LGsur100z <- LGsur100 - adp_koppel_tuinen$LG100
+#  adp_koppel_tuinen$Wsur100z <- Wsur100 - adp_koppel_tuinen$W100
+#  adp_koppel_tuinen$Asur100z <- Asur100 - adp_koppel_tuinen$A100
+#  adp_koppel_tuinen$BSsur100z <- BSsur100 - adp_koppel_tuinen$BS100
+  
+#  adp_koppel_tuinen$HGsur100v <- HGsur100 + adp_koppel_tuinen$LG100 + adp_koppel_tuinen$W100 + adp_koppel_tuinen$A100 + #adp_koppel_tuinen$BS100
+#  adp_koppel_tuinen$LGsur100v <- LGsur100 - adp_koppel_tuinen$LG100
+#  adp_koppel_tuinen$Wsur100v <- Wsur100 - adp_koppel_tuinen$W100
+#  adp_koppel_tuinen$Asur100v <- Asur100 - adp_koppel_tuinen$A100
+#  adp_koppel_tuinen$BSsur100v <- BSsur100 - adp_koppel_tuinen$BS100
+
+#  adp_koppel_tuinen$sur200z <- sur200 - adp_koppel_tuinen$ex200
+#  adp_koppel_tuinen$HGsur200z <- HGsur200 - adp_koppel_tuinen$HG200
+#  adp_koppel_tuinen$LGsur200z <- LGsur200 - adp_koppel_tuinen$LG200
+#  adp_koppel_tuinen$Wsur200z <- Wsur200 - adp_koppel_tuinen$W200
+#  adp_koppel_tuinen$Asur200z <- Asur200 - adp_koppel_tuinen$A200
+#  adp_koppel_tuinen$BSsur200z <- BSsur200 - adp_koppel_tuinen$BS200
+  
+#  adp_koppel_tuinen$HGsur200v <- HGsur200 + adp_koppel_tuinen$LG200 + adp_koppel_tuinen$W200 + adp_koppel_tuinen$A200 + #adp_koppel_tuinen$BS200
+#  adp_koppel_tuinen$LGsur200v <- LGsur200 - adp_koppel_tuinen$LG200
+#  adp_koppel_tuinen$Wsur200v <- Wsur200 - adp_koppel_tuinen$W200
+#  adp_koppel_tuinen$Asur200v <- Asur200 - adp_koppel_tuinen$A200
+#  adp_koppel_tuinen$BSsur200v <- BSsur200 - adp_koppel_tuinen$BS200
+
+#  adp_koppel_tuinen$sur400z <- sur400 - adp_koppel_tuinen$ex400
+#  adp_koppel_tuinen$HGsur400z <- HGsur400 - adp_koppel_tuinen$HG400
+#  adp_koppel_tuinen$LGsur400z <- LGsur400 - adp_koppel_tuinen$LG400
+#  adp_koppel_tuinen$Wsur400z <- Wsur400 - adp_koppel_tuinen$W400
+#  adp_koppel_tuinen$Asur400z <- Asur400 - adp_koppel_tuinen$A400
+#  adp_koppel_tuinen$BSsur400z <- BSsur400 - adp_koppel_tuinen$BS400
+  
+#  adp_koppel_tuinen$HGsur400v <- HGsur400 + adp_koppel_tuinen$LG400 + adp_koppel_tuinen$W400 + adp_koppel_tuinen$A400 + #adp_koppel_tuinen$BS400
+#  adp_koppel_tuinen$LGsur400v <- LGsur400 - adp_koppel_tuinen$LG400
+#  adp_koppel_tuinen$Wsur400v <- Wsur400 - adp_koppel_tuinen$W400
+#  adp_koppel_tuinen$Asur400v <- Asur400 - adp_koppel_tuinen$A400
+#  adp_koppel_tuinen$BSsur400v <- BSsur400 - adp_koppel_tuinen$BS400
+  
+  # Bereken BAF score
+  adp_koppel_tuinen$BAFmtt50 <- (HGsur50 +(LGsur50 *0.5)+(Wsur50*0.7)+(BSsur50*0.2))/sur50
+  adp_koppel_tuinen$BAFzt50 <- (adp_koppel_tuinen$HGsur50z +(adp_koppel_tuinen$LGsur50z*0.5)+(adp_koppel_tuinen$Wsur50z*0.7)+(adp_koppel_tuinen$BSsur50z*0.2))/adp_koppel_tuinen$sur50
+  adp_koppel_tuinen$BAFgrt50 <- (adp_koppel_tuinen$HGsur50v +(adp_koppel_tuinen$LGsur50v*0.5)+(adp_koppel_tuinen$Wsur50v*0.7)+(adp_koppel_tuinen$BSsur50v*0.2))/adp_koppel_tuinen$sur50
+  
+#   adp_koppel_tuinen$BAFmtt100 <- (HGsur100 +(LGsur100 *0.5)+(Wsur100*0.7)+(BSsur100*0.2))/sur100
+#  adp_koppel_tuinen$BAFzt100 <- (adp_koppel_tuinen$HGsur100z #+(adp_koppel_tuinen$LGsur100z*0.5)+(adp_koppel_tuinen$Wsur100z*0.7)+(adp_koppel_tuinen$BSsur100z*0.2))/adp_koppel_tuinen$sur100
+#  adp_koppel_tuinen$BAFgrt100 <- (adp_koppel_tuinen$HGsur100v #+(adp_koppel_tuinen$LGsur100v*0.5)+(adp_koppel_tuinen$Wsur100v*0.7)+(adp_koppel_tuinen$BSsur100v*0.2))/adp_koppel_tuinen$sur100
+  
+#   adp_koppel_tuinen$BAFmtt200 <- (HGsur200 +(LGsur200 *0.5)+(Wsur200*0.7)+(BSsur200*0.2))/sur200
+#  adp_koppel_tuinen$BAFzt200 <- (adp_koppel_tuinen$HGsur200z #+(adp_koppel_tuinen$LGsur200z*0.5)+(adp_koppel_tuinen$Wsur200z*0.7)+(adp_koppel_tuinen$BSsur200z*0.2))/adp_koppel_tuinen$sur200
+#  adp_koppel_tuinen$BAFgrt200 <- (adp_koppel_tuinen$HGsur200v #+(adp_koppel_tuinen$LGsur200v*0.5)+(adp_koppel_tuinen$Wsur200v*0.7)+(adp_koppel_tuinen$BSsur200v*0.2))/adp_koppel_tuinen$sur200
+  
+#   adp_koppel_tuinen$BAFmtt400 <- (HGsur400 +(LGsur400 *0.5)+(Wsur400*0.7)+(BSsur400*0.2))/sur400
+#  adp_koppel_tuinen$BAFzt400 <- ((adp_koppel_tuinen$HGsur400z+(adp_koppel_tuinen$LGsur400z*0.5)+(adp_koppel_tuinen$Wsur400z*0.7)+(adp_koppel_#tuinen$BSsur400z*0.2))/adp_koppel_tuinen$sur400)
+#  adp_koppel_tuinen$BAFgrt400 <- (adp_koppel_tuinen$HGsur400v #+(adp_koppel_tuinen$LGsur400v*0.5)+(adp_koppel_tuinen$Wsur400v*0.7)+(adp_koppel_tuinen$BSsur400v*0.2))/adp_koppel_tuinen$sur400
+  
+  # Bereken het verschil tussen de BAF scores
+  adp_koppel_tuinen$BAF1_50 <- adp_koppel_tuinen$BAFmtt50 - adp_koppel_tuinen$BAFzt50
+  adp_koppel_tuinen$BAF2_50 <- adp_koppel_tuinen$BAFgrt50 - adp_koppel_tuinen$BAFzt50
+  adp_koppel_tuinen$BAFper_50 <- adp_koppel_tuinen$BAF1_50/adp_koppel_tuinen$BAF2_50*100
+  adp_koppel_tuinen$BAFtot_50 <- adp_koppel_tuinen$BAF2_50-adp_koppel_tuinen$BAF1_50
+  
+  #adp_koppel_tuinen$BAF1_100 <- adp_koppel_tuinen$BAFmtt100 - adp_koppel_tuinen$BAFzt100
+  #adp_koppel_tuinen$BAF2_100 <- adp_koppel_tuinen$BAFgrt100 - adp_koppel_tuinen$BAFzt100
+  #adp_koppel_tuinen$BAFper_100 <- adp_koppel_tuinen$BAF1_100/adp_koppel_tuinen$BAF2_100*100
+  #adp_koppel_tuinen$BAFtot_100 <- adp_koppel_tuinen$BAF2_100-adp_koppel_tuinen$BAF1_100
+  
+  #adp_koppel_tuinen$BAF1_200 <- adp_koppel_tuinen$BAFmtt200 - adp_koppel_tuinen$BAFzt200
+  #adp_koppel_tuinen$BAF2_200 <- adp_koppel_tuinen$BAFgrt200 - adp_koppel_tuinen$BAFzt200
+  #adp_koppel_tuinen$BAFper_200 <- adp_koppel_tuinen$BAF1_200/adp_koppel_tuinen$BAF2_200*100
+  #adp_koppel_tuinen$BAFtot_200 <- adp_koppel_tuinen$BAF2_200-adp_koppel_tuinen$BAF1_200
+  
+  #adp_koppel_tuinen$BAF1_400 <- adp_koppel_tuinen$BAFmtt400 - adp_koppel_tuinen$BAFzt400
+  #adp_koppel_tuinen$BAF2_400 <- adp_koppel_tuinen$BAFgrt400 - adp_koppel_tuinen$BAFzt400
+  #adp_koppel_tuinen$BAFper_400 <- adp_koppel_tuinen$BAF1_400/adp_koppel_tuinen$BAF2_400*100
+  #adp_koppel_tuinen$BAFtot_400 <- adp_koppel_tuinen$BAF2_400-adp_koppel_tuinen$BAF1_400
+  
+  #garden density
+  #st_crs(tuinenkaart) <- st_crs(adp_koppel_tuinen)
+  #intersections_50 <- st_intersection(adp_koppel_tuinen_buffer50 %>% dplyr::select(CAPAKEY), 
+   #                              tuinenkaart %>% dplyr::select(CAPAKEY, AREA))
+
+#  intersections_100 <- st_intersection(adp_koppel_tuinen_buffer100 %>% dplyr::select(CAPAKEY), 
+#                                 tuinenkaart %>% dplyr::select(CAPAKEY, AREA))
+
+#  intersections_200 <- st_intersection(adp_koppel_tuinen_buffer200 %>% dplyr::select(CAPAKEY), 
+#                                 tuinenkaart %>% dplyr::select(CAPAKEY, AREA))
+
+#  intersections_400 <- st_intersection(adp_koppel_tuinen_buffer400 %>% dplyr::select(CAPAKEY), 
+#                                 tuinenkaart %>% dplyr::select(CAPAKEY, AREA))
+
+  #Calculate the area of gardens within each buffer
+  #intersections_50$garden_area <- st_area(intersections_50)
+  #intersections_100$garden_area <- st_area(intersections_100)
+  #intersections_200$garden_area <- st_area(intersections_200)
+  #intersections_400$garden_area <- st_area(intersections_400)
+
+  #Sum garden areas per buffer
+  #garden_50 <- intersections_50 %>%
+  #st_drop_geometry() %>%
+  #group_by(CAPAKEY) %>%              # CAPAKEY.x is the buffer’s ID
+  #summarise(garden_50 = sum(as.numeric(garden_area), na.rm = TRUE))
+
+  #garden_100 <- intersections_100 %>%
+  #st_drop_geometry() %>%
+  #group_by(CAPAKEY) %>%              # CAPAKEY.x is the buffer’s ID
+  #summarise(garden_100 = sum(as.numeric(garden_area), na.rm = TRUE))
+
+  #garden_200 <- intersections_200 %>%
+  #st_drop_geometry() %>%
+  #group_by(CAPAKEY) %>%              # CAPAKEY.x is the buffer’s ID
+  #summarise(garden_200 = sum(as.numeric(garden_area), na.rm = TRUE))
+
+  #garden_400 <- intersections_400 %>%
+  #st_drop_geometry() %>%
+  #group_by(CAPAKEY) %>%              # CAPAKEY.x is the buffer’s ID
+  #summarise(garden_400 = sum(as.numeric(garden_area), na.rm = TRUE))
+
+  # Join result back to the buffers or to adp_koppel_tuinen
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #left_join(garden_50, by = c("CAPAKEY" = "CAPAKEY"))
+
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #left_join(garden_100, by = c("CAPAKEY" = "CAPAKEY"))
+
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #left_join(garden_200, by = c("CAPAKEY" = "CAPAKEY"))
+
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #left_join(garden_400, by = c("CAPAKEY" = "CAPAKEY"))
+  
+  #Urban density
+  # intersect buffers with buildings
+  #intersections_bldg_50 <- 
+  #  st_intersection(adp_koppel_tuinen_buffer50 %>% dplyr::select(CAPAKEY),gbg %>% dplyr::select(UIDN))   # replace with your building ID column name
+  #intersections_bldg_100 <- 
+  #  st_intersection(adp_koppel_tuinen_buffer100 %>% dplyr::select(CAPAKEY),gbg %>% dplyr::select(UIDN))   # replace with your building ID column name)
+  #intersections_bldg_200 <-
+  #  st_intersection(adp_koppel_tuinen_buffer200 %>% dplyr::select(CAPAKEY),gbg %>% dplyr::select(UIDN))   # replace with your building ID column name)
+  #intersections_bldg_400 <- 
+  #  st_intersection(adp_koppel_tuinen_buffer400 %>% dplyr::select(CAPAKEY),gbg %>% dplyr::select(UIDN))   # replace with your building ID column name)
+
+  #compute building area inside each buffer
+  #intersections_bldg_50$bldg_area <- st_area(intersections_bldg_50)
+  #intersections_bldg_100$bldg_area <- st_area(intersections_bldg_100)
+  #intersections_bldg_200$bldg_area <- st_area(intersections_bldg_200)
+  #intersections_bldg_400$bldg_area <- st_area(intersections_bldg_400)
+
+  #sum per garden buffer
+  #bldg_50 <- intersections_bldg_50 %>%
+  #  st_drop_geometry() %>%
+  #  group_by(CAPAKEY) %>%
+  #summarise(bldg_50 = sum(as.numeric(bldg_area), na.rm = TRUE))
+
+  # bldg_100 <- intersections_bldg_100 %>%
+  #  st_drop_geometry() %>%
+  #  group_by(CAPAKEY) %>%
+  #summarise(bldg_100 = sum(as.numeric(bldg_area), na.rm = TRUE))
+
+  #  bldg_200 <- intersections_bldg_200 %>%
+  #  st_drop_geometry() %>%
+  #  group_by(CAPAKEY) %>%
+  #summarise(bldg_200 = sum(as.numeric(bldg_area), na.rm = TRUE))
+
+  #   bldg_400 <- intersections_bldg_400 %>%
+  #  st_drop_geometry() %>%
+  #  group_by(CAPAKEY) %>%
+  #summarise(bldg_400 = sum(as.numeric(bldg_area), na.rm = TRUE))
+
+  #join back to gardens
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #  left_join(bldg_50, by = "CAPAKEY")
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #  left_join(bldg_100, by = "CAPAKEY")
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #  left_join(bldg_200, by = "CAPAKEY")
+  #adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  #  left_join(bldg_400, by = "CAPAKEY")
+
+  # TWI
+  mean_TWI <- exact_extract(TWI, adp_koppel_tuinen, 'mean')
+  mean_TWIsur50 <- exact_extract(TWI, adp_koppel_tuinen_buffer50, 'mean')
+  #mean_TWIsur100 <- exact_extract(TWI, adp_koppel_tuinen_buffer100, 'mean')
+  #mean_TWIsur200 <- exact_extract(TWI, adp_koppel_tuinen_buffer200, 'mean')
+  #mean_TWIsur400 <- exact_extract(TWI, adp_koppel_tuinen_buffer400, 'mean')
+  
+  adp_koppel_tuinen$mean_TWI <- mean_TWI
+  adp_koppel_tuinen$TWIrisk <- (adp_koppel_tuinen$mean_TWI-TWI_Flanders_min)/ (TWI_Flanders_max-TWI_Flanders_min)
+  adp_koppel_tuinen$TWIrisk[ adp_koppel_tuinen$TWIrisk < 0] <- 0
+   adp_koppel_tuinen$TWIrisk[ adp_koppel_tuinen$TWIrisk > 1] <- 1
+ 
+ 
+  adp_koppel_tuinen$TWIsur50 <- mean_TWIsur50
+  adp_koppel_tuinen$TWIrisk50 <- (adp_koppel_tuinen$TWIsur50-TWI_Flanders_min)/ (TWI_Flanders_max-TWI_Flanders_min)
+   adp_koppel_tuinen$TWIrisk50[ adp_koppel_tuinen$TWIrisk50 < 0] <- 0
+   adp_koppel_tuinen$TWIrisk50[ adp_koppel_tuinen$TWIrisk50 > 1] <- 1
+ 
+  
+  #adp_koppel_tuinen$TWIsur100 <- mean_TWIsur100
+  #adp_koppel_tuinen$TWIrisk100 <- (adp_koppel_tuinen$TWIsur100-TWI_Flanders_min)/ (TWI_Flanders_max-TWI_Flanders_min)
+  #  adp_koppel_tuinen$TWIrisk100[ adp_koppel_tuinen$TWIrisk100 < 0] <- 0
+  # adp_koppel_tuinen$TWIrisk100[ adp_koppel_tuinen$TWIrisk100 > 1] <- 1
+ 
+   
+  #adp_koppel_tuinen$TWIsur200 <- mean_TWIsur200
+  #adp_koppel_tuinen$TWIrisk200 <- (adp_koppel_tuinen$TWIsur200-TWI_Flanders_min)/ (TWI_Flanders_max-TWI_Flanders_min)
+  #  adp_koppel_tuinen$TWIrisk200[ adp_koppel_tuinen$TWIrisk200 < 0] <- 0
+  # adp_koppel_tuinen$TWIrisk200[ adp_koppel_tuinen$TWIrisk200 > 1] <- 1
+ 
+  
+  #adp_koppel_tuinen$TWIsur400 <- mean_TWIsur400
+ # adp_koppel_tuinen$TWIrisk400 <- (adp_koppel_tuinen$TWIsur400-TWI_Flanders_min)/(TWI_Flanders_max-TWI_Flanders_min)
+#    adp_koppel_tuinen$TWIrisk400[ adp_koppel_tuinen$TWIrisk400 < 0] <- 0
+ #  adp_koppel_tuinen$TWIrisk400[ adp_koppel_tuinen$TWIrisk400 > 1] <- 1
+ 
+ 
+  # LST
+  mean_LST <- exact_extract(LST, adp_koppel_tuinen, 'mean')
+  mean_LSTsur50 <- exact_extract(LST, adp_koppel_tuinen_buffer50, 'mean')
+  #mean_LSTsur100 <- exact_extract(LST, adp_koppel_tuinen_buffer100, 'mean')
+  #mean_LSTsur200 <- exact_extract(LST, adp_koppel_tuinen_buffer200, 'mean')
+  #mean_LSTsur400 <- exact_extract(LST, adp_koppel_tuinen_buffer400, 'mean')
+  
+  adp_koppel_tuinen$mean_LST <- mean_LST
+  adp_koppel_tuinen$LSTrisk <- (adp_koppel_tuinen$mean_LST-LST_Flanders_min)/(LST_Flanders_max-LST_Flanders_min)
+  adp_koppel_tuinen$LSTrisk[ adp_koppel_tuinen$LSTrisk < 0] <- 0
+   adp_koppel_tuinen$LSTrisk[ adp_koppel_tuinen$LSTrisk > 1] <- 1
+  
+  adp_koppel_tuinen$LSTsur50 <- mean_LSTsur50
+  adp_koppel_tuinen$LSTrisk50 <- (adp_koppel_tuinen$LSTsur50-LST_Flanders_min)/(LST_Flanders_max-LST_Flanders_min)
+  adp_koppel_tuinen$LSTrisk50[ adp_koppel_tuinen$LSTrisk50 < 0] <- 0
+  adp_koppel_tuinen$LSTrisk50[ adp_koppel_tuinen$LSTrisk50 > 1] <- 1
+ 
+     
+  #adp_koppel_tuinen$LSTsur100 <- mean_LSTsur100
+  #adp_koppel_tuinen$LSTrisk100 <- (adp_koppel_tuinen$LSTsur100-LST_Flanders_min)/(LST_Flanders_max-LST_Flanders_min)
+  #adp_koppel_tuinen$LSTrisk100[ adp_koppel_tuinen$LSTrisk100 < 0] <- 0
+  #adp_koppel_tuinen$LSTrisk100[ adp_koppel_tuinen$LSTrisk100 > 1] <- 1
+     
+  # adp_koppel_tuinen$LSTsur200 <- mean_LSTsur200
+  # adp_koppel_tuinen$LSTrisk200 <- (adp_koppel_tuinen$LSTsur200-LST_Flanders_min)/(LST_Flanders_max-LST_Flanders_min)
+  # adp_koppel_tuinen$LSTrisk200[ adp_koppel_tuinen$LSTrisk200 < 0] <- 0
+  #adp_koppel_tuinen$LSTrisk200[ adp_koppel_tuinen$LSTrisk200 > 1] <- 1
+ 
+  #adp_koppel_tuinen$LSTsur400 <- mean_LSTsur400
+  #adp_koppel_tuinen$LSTrisk400 <- (adp_koppel_tuinen$LSTsur400-LST_Flanders_min)/(LST_Flanders_max-LST_Flanders_min)
+  #adp_koppel_tuinen$LSTrisk400[ adp_koppel_tuinen$LSTrisk400 < 0] <- 0
+  #adp_koppel_tuinen$LSTrisk400[ adp_koppel_tuinen$LSTrisk400 > 1] <- 1
+    
+  #Vulnerability
+  st_crs(adp_koppel_tuinen) <- st_crs(Vulnerability)
+  st_crs(adp_koppel_tuinen_buffer50) <- st_crs(Vulnerability)
+  #st_crs(adp_koppel_tuinen_buffer100) <- st_crs(Vulnerability)
+  #st_crs(adp_koppel_tuinen_buffer200) <- st_crs(Vulnerability)
+  #st_crs(adp_koppel_tuinen_buffer400) <- st_crs(Vulnerability)
+  
+  # Define a function to compute mean BIMD per buffer zone
+compute_bimd_mean <- function(buffer_layer, buffer_dist) {
+  bimd_join <- st_join(buffer_layer, Vulnerability)
+
+  bimd_summary <- bimd_join %>%
+    group_by(CAPAKEY) %>%
+    summarise(
+      !!paste0("BIMDhe", buffer_dist) := mean(as.numeric(HEAL_S), na.rm = TRUE) ,
+        !!paste0("BIMDc",  buffer_dist) := mean(as.numeric(CRIM_S), na.rm = TRUE) ,
+        !!paste0("BIMDho", buffer_dist) := mean(as.numeric(HOUS_S), na.rm = TRUE) ,
+        !!paste0("BIMDed", buffer_dist) := mean(as.numeric(EDU_S),  na.rm = TRUE) ,
+        !!paste0("BIMDem", buffer_dist) := mean(as.numeric(EMP_S),  na.rm = TRUE) ,
+        !!paste0("BIMDi",  buffer_dist) := mean(as.numeric(INC_S),  na.rm = TRUE) ,
+        !!paste0("STATUNEMP", buffer_dist) := mean(as.numeric(UNEMP), na.rm = TRUE),
+        !!paste0("STATHH1",   buffer_dist) := mean(as.numeric(HH1),  na.rm = TRUE),
+        !!paste0("STATHH_K",  buffer_dist) := mean(as.numeric(HH_K),  na.rm = TRUE),
+        !!paste0("STATRent",  buffer_dist) := mean(as.numeric(Rent),  na.rm = TRUE),
+        !!paste0("STATEDU",   buffer_dist) := mean(as.numeric(EDU),   na.rm = TRUE),
+        !!paste0("STATEld",   buffer_dist) := mean(as.numeric(Eld),   na.rm = TRUE),
+        !!paste0("STATEU",    buffer_dist) := mean(as.numeric(EU),    na.rm = TRUE),
+        !!paste0("STATN_EU",  buffer_dist) := mean(as.numeric(N_EU),  na.rm = TRUE)
+    )
+
+  return(bimd_summary)
+}
+
+# Apply function to all buffer distances
+st_crs(Vulnerability) <- st_crs(adp_koppel_tuinen)
+bimd_0  <- compute_bimd_mean(adp_koppel_tuinen, 0)
+bimd_50 <- compute_bimd_mean(adp_koppel_tuinen_buffer50, 50)
+#bimd_100 <- compute_bimd_mean(adp_koppel_tuinen_buffer100, 100)
+#bimd_200 <- compute_bimd_mean(adp_koppel_tuinen_buffer200, 200)
+#bimd_400 <- compute_bimd_mean(adp_koppel_tuinen_buffer400, 400)
+
+# Drop geometry before merging
+bimd_0 <- st_drop_geometry(bimd_0)
+bimd_50 <- st_drop_geometry(bimd_50)
+#bimd_100 <- st_drop_geometry(bimd_100)
+#bimd_200 <- st_drop_geometry(bimd_200)
+#bimd_400 <- st_drop_geometry(bimd_400)
+
+# Merge all summaries into main garden polygons
+adp_koppel_tuinen <- adp_koppel_tuinen %>%
+  left_join(bimd_0, by = "CAPAKEY") %>%
+  left_join(bimd_50, by = "CAPAKEY") # %>%
+  #left_join(bimd_100, by = "CAPAKEY") %>%
+  #left_join(bimd_200, by = "CAPAKEY") %>%
+  #left_join(bimd_400, by = "CAPAKEY")
+  
+  #test <- st_join(adp_koppel_tuinen, BIMD, largest=TRUE)
+  #adp_koppel_tuinen$BIMD <- as.numeric(test$BIMD201118)/100
+  #adp_koppel_tuinen$BIMD_he <- as.numeric(test$BIMD201115)/100
+  #adp_koppel_tuinen$BIMD_c <- as.numeric(test$BIMD201112)/100
+  #adp_koppel_tuinen$BIMD_ho <- as.numeric(test$BIMD20119)/100
+  #adp_koppel_tuinen$BIMD_ed <- as.numeric(test$BIMD20116)/100
+  #adp_koppel_tuinen$BIMD_em <- as.numeric(test$BIMD20113)/100
+  #adp_koppel_tuinen$BIMD_i <- as.numeric(test$BIMD20111)/100
+  
+  # EXPOSURE
+  # Mean exposure inside gardens
+  mean_exp <- exact_extract(exposure, adp_koppel_tuinen, 'mean')
+  
+  # Mean exposure in buffers
+  mean_exp50  <- exact_extract(exposure, adp_koppel_tuinen_buffer50,  'mean')
+  #mean_exp100 <- exact_extract(exposure, adp_koppel_tuinen_buffer100, 'mean')
+  #mean_exp200 <- exact_extract(exposure, adp_koppel_tuinen_buffer200, 'mean')
+  #mean_exp400 <- exact_extract(exposure, adp_koppel_tuinen_buffer400, 'mean')
+  
+  # Add to dataframe
+  adp_koppel_tuinen$mean_exp     <- mean_exp
+  adp_koppel_tuinen$expsur50   <- mean_exp50
+  #adp_koppel_tuinen$expsur100  <- mean_exp100
+  #adp_koppel_tuinen$expsur200  <- mean_exp200
+  #adp_koppel_tuinen$expsur400  <- mean_exp400
+  
+  # Normalize exposure metrics
+  adp_koppel_tuinen$exp     <- (adp_koppel_tuinen$mean_exp  - exp_min) / (exp_max - exp_min)
+  adp_koppel_tuinen$exp[adp_koppel_tuinen$exp < 0] <- 0
+  adp_koppel_tuinen$exp[adp_koppel_tuinen$exp > 1] <- 1
+  adp_koppel_tuinen$exp50   <- (adp_koppel_tuinen$expsur50   - exp_min) / (exp_max - exp_min)
+  adp_koppel_tuinen$exp50[adp_koppel_tuinen$exp50 < 0] <- 0
+  adp_koppel_tuinen$exp50[adp_koppel_tuinen$exp50 > 1] <- 1
+  #adp_koppel_tuinen$exp100  <- (adp_koppel_tuinen$expsur100  - exp_min) / (exp_max - exp_min)
+  #adp_koppel_tuinen$exp100[adp_koppel_tuinen$exp100 < 0] <- 0
+  #adp_koppel_tuinen$exp100[adp_koppel_tuinen$exp100 > 1] <- 1
+  #adp_koppel_tuinen$exp200  <- (adp_koppel_tuinen$expsur200  - exp_min) / (exp_max - exp_min)
+  #adp_koppel_tuinen$exp200[adp_koppel_tuinen$exp200 < 0] <- 0
+  #adp_koppel_tuinen$exp200[adp_koppel_tuinen$exp200 > 1] <- 1
+  #adp_koppel_tuinen$exp400  <- (adp_koppel_tuinen$expsur400  - exp_min) / (exp_max - exp_min)
+  #adp_koppel_tuinen$exp400[adp_koppel_tuinen$exp400 < 0] <- 0
+  #adp_koppel_tuinen$exp400[adp_koppel_tuinen$exp400 > 1] <- 1
+ 
+
+  # HAZARD
+  adp_koppel_tuinen$haz <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("LSTrisk", "TWIrisk")], na.rm = TRUE)
+  adp_koppel_tuinen$haz50 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("LSTrisk50", "TWIrisk50")], na.rm = TRUE)
+#  adp_koppel_tuinen$haz100 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("LSTrisk100", "TWIrisk100")], na.rm = TRUE)
+#  adp_koppel_tuinen$haz200 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("LSTrisk200", "TWIrisk200")], na.rm = TRUE)
+#  adp_koppel_tuinen$haz400 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("LSTrisk400", "TWIrisk400")], na.rm = TRUE)
+  
+  # SOCIAL VULNERABILITY
+  adp_koppel_tuinen$vul <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("BIMDhe0", "BIMDc0","BIMDho0","STATUNEMP0","STATHH10","STATHH_K0","STATRent0","STATEDU0","STATEld0","STATEU0","STATN_EU0")], na.rm = TRUE)
+  adp_koppel_tuinen$vul50 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP50","STATHH150","STATHH_K50","STATRent50","STATEDU50","STATEld50","STATEU50","STATN_EU50")], na.rm = TRUE)
+#  adp_koppel_tuinen$vul100 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("BIMDhe100", #"BIMDc100","BIMDho100","STATUNEMP100","STATHH1100","STATHH_K100","STATRent100","STATEDU100","STATEld100","STATEU100","STATN_EU100")], na.rm = #TRUE)
+#  adp_koppel_tuinen$vul200 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("BIMDhe200", #"BIMDc200","BIMDho200","STATUNEMP200","STATHH1200","STATHH_K200","STATRent200","STATEDU200","STATEld200","STATEU200","STATN_EU200")], na.rm #= TRUE)
+#  adp_koppel_tuinen$vul400 <- rowMeans(st_drop_geometry(adp_koppel_tuinen)[, c("BIMDhe400", #"BIMDc400","BIMDho400","STATUNEMP400","STATHH1400","STATHH_K400","STATRent400","STATEDU400","STATEld400","STATEU400","STATN_EU400")], na.rm #= TRUE)
+
+#TOTAL RISK 
+  adp_koppel_tuinen$risk <- (0.3333*adp_koppel_tuinen$exp + 0.3333*adp_koppel_tuinen$haz + 0.3333*adp_koppel_tuinen$vul)
+  
+  adp_koppel_tuinen$risk50 <- (0.3333*adp_koppel_tuinen$exp50 + 0.3333*adp_koppel_tuinen$haz50 + 0.3333*adp_koppel_tuinen$vul50)
+    
+  #adp_koppel_tuinen$risk100 <- (0.3333*adp_koppel_tuinen$exp100 + 0.3333*adp_koppel_tuinen$haz100 + 0.3333*adp_koppel_tuinen$vul100)
+      
+  #adp_koppel_tuinen$risk200 <- (0.3333*adp_koppel_tuinen$exp200 + 0.3333*adp_koppel_tuinen$haz200 + 0.3333*adp_koppel_tuinen$vul200)
+  
+   #adp_koppel_tuinen$risk400 <- (0.3333*adp_koppel_tuinen$exp400 + 0.3333*adp_koppel_tuinen$haz400 + 0.3333*adp_koppel_tuinen$vul400)
+  
+  # omzetten tot vector
+  BAF_tuinenkaart <- as(adp_koppel_tuinen, 'Spatial')
+  
+  # vector wegschrijven 
+  a <- sub(".shp.*", "\\1", tuinkaarten[i])
+  b <- sub(".tif.*", "\\1", rasters1[k])
+  #assign(x=paste(a,b,"BAF_2015",sep = "."), value = BAF_tuinenkaart)
+  BAF_tuinenkaart <- st_as_sf(BAF_tuinenkaart)
+  names(BAF_tuinenkaart) <- substr(names(BAF_tuinenkaart), 1, 10)
+ # Construct output directory and filename
+output_dir <- paste0("H:/WP3/Output/Garden_n/", BBK, "/")
+output_layer <- paste(a, b, "metrics_n", sep = ".")
+
+# Make sure the folder exists
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Write shapefile
+st_write(
+  BAF_tuinenkaart,
+  dsn = file.path(output_dir, paste0(output_layer, ".shp")),
+  driver = "ESRI Shapefile",
+  delete_layer = TRUE
+)
+  #writeOGR(BAF_tuinenkaart, dsn = "I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Processing/Garden metrics" , layer = paste(a,b,"metrics_2015",sep = "."), driver= "ESRI Shapefile", overwrite_layer = TRUE)
+  print(paste(a,b,"metrics",sep = "."))
+  # Set path to the temporary raster folder
+  raster_path <- file.path(tempdir(), "raster")
+  # List full paths of files in that folder
+  files_to_remove <- list.files(raster_path, full.names = TRUE)
+  # Remove the files
+  file.remove(files_to_remove)
+  gc()
+  if (i > 0){
+    break
+  }
+  }
+  if (length(test)==0){
+    if (i > 0){
+      break
+    }
+  }
+  }
+  }
+}
+
+```
+
