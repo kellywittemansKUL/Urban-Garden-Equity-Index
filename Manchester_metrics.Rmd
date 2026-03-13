@@ -8,19 +8,19 @@ output: html_document
 ## Preparation
 
 ```{r}
-#0# Workspace opruimen
+#0# Clean workspace
 rm(list=ls())
 ```
 
 ```{r}
-#1# Installeer libraries 
+#1# Install libraries 
 #install.packages(c("rpostgis","raster","rgdal","dplyr","RSAGA","httr","sf","sp","fasterize", "sqldf", #"ncdf4","exactextractr","landscapemetrics"))
 #install.packages("doParallel")
 #install.packages("foreach")
 ```
 
 ```{r}
-#2# Activeer libraries
+#2# Activate libraries
 #library(rpostgis)
 library(raster)
 #library(rgdal)
@@ -40,27 +40,31 @@ library(landscapemetrics)
 ```
 
 ```{r}
-#setwd("//tsclient/C/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/Input")
+#Set working directory
+#setwd(".")
 ```
 
 ```{r}
-#if parallel 
+#if parallel processing
 #n_cores <- 5  
 #cl <- makeCluster(n_cores)
 #registerDoParallel(cl)
 ```
 
 ```{r}
-Gardens <-st_read('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/Manchester Data/Manchester/Final_Gardens_BNG_fix_rowID.shp')
+#Garden parcel map
+Gardens <-st_read('./Input/Manchester Data/Manchester/Final_Gardens_BNG_fix_rowID.shp')
 
-Parcels <- st_read('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/Manchester Data/Manchester/Parcel_boundaries_v2.shp')
+#Adminstrative parcel map
+Parcels <- st_read('./Input/Manchester Data/Manchester/Parcel_boundaries_v2.shp')
 
-Landcover <- raster('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/Manchester Data/LandCoverData/GHIA_Final_GM_data.tif')
+#Land cover map
+Landcover <- raster('./Input/Manchester Data/LandCoverData/GHIA_Final_GM_data.tif')
 #eventueel accuraatere landcover toevoegen van 2x2m resolutie 
-Landcover2 <- raster('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/Manchester Data/Classification_Manchester_thesis_1.5m_res_2017 (1)/CL_fin_study_area_extents.tif')
-#CRS???? 
+Landcover2 <- raster('./Input/Manchester Data/Classification_Manchester_thesis_1.5m_res_2017 (1)/CL_fin_study_area_extents.tif')
 
-TWI <- raster('E:/WP3/Input/TWI/TWI_Quinn_Manchester_filled_sinksPlanchon.tif')
+#Topographic Wetness Index (TWI)
+TWI <- raster('./Input/TWI/TWI_Quinn_Manchester_filled_sinksPlanchon.tif')
 
 #Q3 bepalen
 #TWI_Flanders_Q3 <- quantile(TWI_Flanders, 0.75)
@@ -70,10 +74,8 @@ TWI_Manchester_max <- 17.5
 TWI_Manchester_min <- minValue(TWI)
 TWI_Manchester_min <- 6.28
 
-#LCZ_Leuven <- raster('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/4. #Projecten/Eva/LCZ/pred_LCZ_100m_modal3x3_v4.tif')
-#LCZ <- raster('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. #Onderzoek/WP3/Input/lcz_filter_v3.tif')
-
-LST <- raster('E:/WP3/Input/LST/LST_Manchester.tif')
+#Land surface temperature
+LST <- raster('./Input/LST/LST_Manchester.tif')
 LST[LST < 0] <- NA
 LST_Manchester_max <- maxValue(LST)
 LST_Manchester_max <- 38.7
@@ -90,11 +92,14 @@ LST_Manchester_min <- 24.3
 #LST_Flanders_Q3 <- quantile(LST_Flanders, 0.75)
 #31.7
 
-Vulnerability <- st_read('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/gardens_vulnerability_quantile_scaled_Manchester.shp')
+#Social Vulnerability dataset
+Vulnerability <- st_read('./Input/gardens_vulnerability_quantile_scaled_Manchester.shp')
 
-Gbg <- st_read("C:/Users/u0137615/Downloads/transfer_478070_files_e69ff877/Buildings_Manchester.shp")
+#Building dataset
+Gbg <- st_read("./Buildings_Manchester.shp")
 
-exposure <- st_read("C:/Users/u0137615/Downloads/transfer_478070_files_e69ff877/Pop_density_NOMIS_Manchester.shp")
+#Exposure dataset
+exposure <- st_read("./Pop_density_NOMIS_Manchester.shp")
 
 # Define min and max of exposure raster (or across your study area)
 exp_min <- min(exposure$Pop_densit, na.rm = TRUE)/100
@@ -764,7 +769,7 @@ st_write(
   driver = "ESRI Shapefile",
   delete_layer = TRUE
 )
-  #writeOGR(BAF_tuinenkaart, dsn = "I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Processing/Garden metrics" , layer = paste(a,b,"metrics_2015",sep = "."), driver= "ESRI Shapefile", overwrite_layer = TRUE)
+  #writeOGR(BAF_tuinenkaart, dsn = "./Output" , layer = paste(a,b,"metrics_2015",sep = "."), driver= "ESRI Shapefile", overwrite_layer = TRUE)
   print(paste(a,b,"metrics",sep = "."))
   # Set path to the temporary raster folder
   raster_path <- file.path(tempdir(), "raster")
@@ -775,4 +780,5 @@ st_write(
   gc()
 }
 ```
+
 
