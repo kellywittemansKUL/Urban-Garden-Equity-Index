@@ -1,0 +1,2401 @@
+---
+title: "Statistics"
+author: "Kelly"
+date: "2025-08-29"
+output: html_document
+---
+
+```{r}
+#0# Workspace opruimen
+rm(list=ls())
+```
+
+```{r}
+#load packages
+library(sf)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(writexl)
+library(plotly)
+library(scales)
+library(ggnewscale)
+library(patchwork)
+library(corrplot)
+```
+
+#Load data
+```{r}
+#load flanders
+
+# path to folder
+shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_15/Buffers"
+
+# list shapefiles
+shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+
+# function to read shapefile and add city column
+read_with_city <- function(file) {
+  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
+  st_read(file, quiet = TRUE) %>%
+    mutate(city = city)
+}
+
+# read all and bind.
+all_gardens_15 <- map(shp_files, read_with_city) %>%
+  bind_rows()
+```
+
+
+#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+```{r}
+#filter
+all_gardens_15 <- all_gardens_15 %>% filter(ex50 != 0)
+
+sum(duplicated(all_gardens_15$CAPAKEY))
+```
+
+```{r}
+#calculate index
+all_gardens_15$UGEI_50h <- all_gardens_15$BAF1_50-all_gardens_15$risk50
+#all_gardens_15$UGEI_100 <- all_gardens_15$BAFtot_100-all_gardens_15$risk100_2
+#all_gardens_15$UGEI_200 <- all_gardens_15$BAFtot_200-all_gardens_15$risk200_2
+#all_gardens_15$UGEI_400 <- all_gardens_15$BAFtot_400-all_gardens_15$risk400_2
+```
+
+#Correlatie plot
+```{r}
+gardens_analysis <- all_gardens_15[, c("TWIrisk50","LSTrisk50", "BAF1_50","BAF2_50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50", "garden_50", "bldg_50","UGEI_50","exp50")]
+
+gardens_analysis <- st_drop_geometry(gardens_analysis)
+# Convert all columns to numeric
+gardens_analysis[] <- lapply(gardens_analysis, function(x) as.numeric(as.character(x)))
+
+# Calculate Spearman correlation coefficients
+cor_matrix <- cor(gardens_analysis, method = "spearman", use="complete.obs")
+
+# Create a correlation heatmap
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black",
+  title = "Spearman Correlation Heatmap"
+)
+```
+
+#Linear model
+```{r}
+gardens_analysis2 <- all_gardens_15[, c("TWIrisk50","LSTrisk50", "BAF1_50","BAF2_50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50", "garden_50", "bldg_50","UGEI_50h","exp50")]
+
+gardens_analysis2 <- st_drop_geometry(gardens_analysis2)
+# Convert all columns to numeric
+gardens_analysis2[] <- lapply(gardens_analysis2, function(x) as.numeric(as.character(x)))
+
+hist(gardens_analysis2$UGEI_50h)
+
+model <- lm(UGEI_50h ~ TWIrisk50 + LSTrisk50 + exp50 + BIMDhe50 + BIMDc50 + BIMDho50 + STATUNEMP5 + STATHH150 + STATHH_K50 + STATRent50 + STATEDU50 + STATEld50 + STATEU50 + STATN_EU50, data= gardens_analysis2)
+summary(model)
+
+model <- lm(UGEI_50h ~ garden_50 + bldg_50, data= gardens_analysis2)
+summary(model)
+
+# make a copy to keep your original data safe
+gardens_scaled <- gardens_analysis2  
+
+# standardize all predictors except the outcome
+predictors <- c("TWIrisk50", "LSTrisk50", "BIMDhe50", "BIMDc50", "BIMDho50", 
+                "STATUNEMP5", "STATHH150", "STATHH_K50", "STATRent50", 
+                "STATEDU50", "STATEld50", "STATEU50", "STATN_EU50","exp50")
+
+gardens_scaled[predictors] <- scale(gardens_scaled[predictors])
+
+# fit model with standardized predictors
+model_scaled <- lm(UGEI_50h ~ ., data = gardens_scaled[, c("UGEI_50h", predictors)])
+summary(model_scaled)
+vif(model_scaled)
+
+# standardize all predictors except the outcome
+predictors <- c("TWIrisk50", "LSTrisk50", "BIMDhe50", "BIMDc50", "BIMDho50", 
+                "STATUNEMP5", "STATHH150", "STATHH_K50", "STATRent50", 
+                "STATEDU50", "STATEld50", "STATEU50","exp50")
+
+gardens_scaled[predictors] <- scale(gardens_scaled[predictors])
+
+# fit model with standardized predictors
+model_scaled <- lm(UGEIh_50 ~ ., data = gardens_scaled[, c("UGEI_50", predictors)])
+summary(model_scaled)
+vif(model_scaled)
+
+library(DHARMa)
+# Simulate residuals
+sim_res <- simulateResiduals(model_scaled)
+# Plot diagnostics
+plot(sim_res)
+
+library(glmmTMB)
+gardens_scaled$UGEI_rescaled <- (gardens_scaled$UGEIh_50 + 1) / 2
+formula_tmb <- as.formula(
+  paste("UGEI_rescaled ~", paste(predictors, collapse = " + "))
+)
+
+model_tmb <- glmmTMB(
+  formula_tmb,
+  data   = gardens_scaled,
+  family = beta_family(link = "logit")
+)
+
+library(DHARMa)
+sim_res <- simulateResiduals(model_tmb)
+plot(sim_res)
+
+library(dotwhisker)
+library(broom)
+library(ggplot2)
+
+# Tidy model coefficients
+coef_df <- tidy(model_scaled, conf.int = TRUE)
+coef_df <- subset(coef_df, term != "(Intercept)")
+
+# Add significance column
+coef_df$sig <- ifelse(coef_df$p.value < 0.05, "Significant", "Not Significant")
+
+# Add a dummy 'model' column (required by dwplot)
+coef_df$model <- "Standardized LM"
+
+# Optional: order predictors
+coef_df$term <- factor(coef_df$term, levels = rev(c(
+  "TWIrisk50", "LSTrisk50", "BIMDhe50", "BIMDc50", "BIMDho50",
+  "STATUNEMP5", "STATHH150", "STATHH_K50", "STATRent50",
+  "STATEDU50", "STATEld50", "STATEU50", "STATN_EU50", "exp50"
+)))
+
+# Forest plot using dwplot aesthetics
+dwplot(coef_df, dot_args = list(aes(shape = sig, colour = sig), size = 4)) +
+  scale_color_manual(values = c("Significant" = "black", "Not Significant" = "grey60")) +
+  scale_shape_manual(values = c("Significant" = 16, "Not Significant" = 1)) +  # filled vs hollow
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Standardized Coefficient (β)", y = "",
+       title = "Forest Plot of Standardized Model") +
+  theme_bw(base_size = 16) +
+  theme(legend.position = "none")
+
+
+library(mgcv)
+
+ "TWIrisk50", "LSTrisk50", "BIMDhe50", "BIMDc50", "BIMDho50",
+  "STATUNEMP5", "STATHH150", "STATHH_K50", "STATRent50",
+  "STATEDU50", "STATEld50", "STATEU50", "STATN_EU50", "exp50"
+
+# Simple GAM with continuous UGEI index
+gam_model <- gam(
+  UGEI_50h ~ s(TWIrisk50) + s(LSTrisk50) + s(BIMDhe50) + s(BIMDc50) + s(BIMDho50) 
+                  s(STATUNEMP5) + s(STATHH150) ,
+  data = gardens_scaled,
+  family = gaussian()
+)
+
+summary(gam_model)  # check significance of each smooth
+plot(gam_model, pages = 1)  # visualize smooth effects
+```
+
+
+
+#HOTSPOT analyse
+```{r}
+library(spdep)
+
+
+gardens_analysis3 <- all_gardens_15[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50", "risk50")]
+
+garden_analysis3_subset <- gardens_analysis3[is.finite(gardens_analysis3$UGEI_50h), ]
+
+# Create a neighbor list
+list_nb <- poly2nb(garden_analysis3_subset, queen=TRUE,  snap=10)
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+empty_nb <- which(card(list_nb) == 0)
+empty_nb  
+
+# Remove polygons with empty neighbor sets from the data
+garden_analysis3_subset <- garden_analysis3_subset[-empty_nb, ]
+
+# Now that we removed empty neighbor sets (tes_subset)
+# Identify neighbors with queen contiguity (edge/vertex touching)
+tes_nb <- poly2nb(garden_analysis3_subset, queen=TRUE,  snap=10)
+
+# Binary weighting assigns a weight of 1 to all neighboring features 
+# and a weight of 0 to all other features
+tes_w_binary <- nb2listw(tes_nb, style="W")
+
+# Calculate spatial lag of TreEqty
+tes_lag <- lag.listw(tes_w_binary, garden_analysis3_subset$UGEI_50h)
+
+# Test for global Moran I statistic 
+moran.test(garden_analysis3_subset$UGEI_50h, tes_w_binary)
+
+local_moran <- localmoran(garden_analysis3_subset$UGEI_50h, tes_w_binary)
+
+local_moran <- localmoran(garden_analysis3_subset$UGEI_50h, tes_w_binary)
+
+garden_analysis3_subset$Ii <- local_moran[, "Ii"]
+garden_analysis3_subset$Z_Ii <- local_moran[, "Z.Ii"]
+garden_analysis3_subset$p_value <- local_moran[, "Pr(z != E(Ii))"]
+
+# Spatial lag of UGEI
+garden_analysis3_subset$UGEI_lag <- lag.listw(tes_w_binary, garden_analysis3_subset$UGEI_50h)
+
+# Mean of UGEI
+UGEI_mean <- mean(garden_analysis3_subset$UGEI_50h, na.rm = TRUE)
+
+# Create cluster category
+garden_analysis3_subset$cluster <- NA
+garden_analysis3_subset$cluster[
+  garden_analysis3_subset$UGEI_50h > UGEI_mean & 
+  garden_analysis3_subset$UGEI_lag > UGEI_mean & 
+  garden_analysis3_subset$p_value <= 0.05] <- "High-High"
+
+garden_analysis3_subset$cluster[
+  garden_analysis3_subset$UGEI_50h < UGEI_mean & 
+  garden_analysis3_subset$UGEI_lag < UGEI_mean & 
+  garden_analysis3_subset$p_value <= 0.05] <- "Low-Low"
+
+garden_analysis3_subset$cluster[
+  garden_analysis3_subset$UGEI_50h > UGEI_mean & 
+  garden_analysis3_subset$UGEI_lag < UGEI_mean & 
+  garden_analysis3_subset$p_value <= 0.05] <- "High-Low"
+
+garden_analysis3_subset$cluster[
+  garden_analysis3_subset$UGEI_50h < UGEI_mean & 
+  garden_analysis3_subset$UGEI_lag > UGEI_mean & 
+  garden_analysis3_subset$p_value <= 0.05] <- "Low-High"
+
+# Everything else = not significant
+garden_analysis3_subset$cluster[is.na(garden_analysis3_subset$cluster)] <- "Not significant"
+
+# ---- New: categorize p-values ----
+garden_analysis3_subset$p_category <- cut(
+  garden_analysis3_subset$p_value,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("p <= 0.001", "p <= 0.01", "p <= 0.05", "No significance"),
+  right = TRUE
+)
+
+# Quick check of counts per cluster and p-value
+library(dplyr)
+
+summary_table <- garden_analysis3_subset %>%
+  group_by(p_category) %>%
+  summarise(Number_of_gardens = n(), .groups = "drop") %>%
+  mutate(Percent_of_gardens = Number_of_gardens / sum(Number_of_gardens) * 100)
+
+summary_table
+
+cluster_summary <- garden_analysis3_subset %>%
+  group_by(cluster) %>%
+  summarise(Number_of_gardens = n(), .groups = "drop") %>%
+  mutate(Percent_of_gardens = Number_of_gardens / sum(Number_of_gardens) * 100)
+
+cluster_summary
+```
+
+#BILISA
+```{r}
+library(bispdep)
+library(dplyr)
+
+gardens_analysis3 <- all_gardens_15[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50", "risk50")]
+
+garden_analysis3_subset <- gardens_analysis3[is.finite(gardens_analysis3$UGEI_50h), ]
+
+# Assume garden_analysis3_subset already cleaned and neighbors defined as tes_w_binary
+
+# Create a neighbor list
+list_nb <- poly2nb(garden_analysis3_subset, queen=TRUE,  snap=10)
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+empty_nb <- which(card(list_nb) == 0)
+empty_nb  
+
+# Remove polygons with empty neighbor sets from the data
+garden_analysis3_subset <- garden_analysis3_subset[-empty_nb, ]
+
+# Now that we removed empty neighbor sets (tes_subset)
+# Identify neighbors with queen contiguity (edge/vertex touching)
+tes_nb <- poly2nb(garden_analysis3_subset, queen=TRUE,  snap=10)
+
+# Binary weighting assigns a weight of 1 to all neighboring features 
+# and a weight of 0 to all other features
+tes_w_binary <- nb2listw(tes_nb, style="W")
+
+# Variables
+varX <- garden_analysis3_subset$haz50   # dependent
+varY <- garden_analysis3_subset$BAFtot_50  # explanatory
+
+# Run bivariate Local Moran's I
+local_bi <- bispdep::localmoran.bi(varX, varY, tes_w_binary, alternative="two.sided")
+
+# Inspect results
+head(local_bi)
+
+# Add key columns to your data
+garden_analysis3_subset$Ii_bi <- local_bi[, "Ixyi"]
+garden_analysis3_subset$Z_Ii_bi <- local_bi[, "Z.Ixyi"]
+garden_analysis3_subset$p_value_bi <- local_bi[, "Pr(z != 0)"]
+
+# Spatial lag of varY for cluster assignment
+varY_lag <- lag.listw(tes_w_binary, varY)
+
+# Mean values
+varX_mean <- mean(varX, na.rm=TRUE)
+varY_lag_mean <- mean(varY_lag, na.rm=TRUE)
+
+# Classify bivariate clusters
+garden_analysis3_subset$cluster_bi <- NA
+garden_analysis3_subset$cluster_bi[
+  varX > varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "High-High"
+garden_analysis3_subset$cluster_bi[
+  varX < varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "Low-Low"
+garden_analysis3_subset$cluster_bi[
+  varX > varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "High-Low"
+garden_analysis3_subset$cluster_bi[
+  varX < varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "Low-High"
+garden_analysis3_subset$cluster_bi[is.na(garden_analysis3_subset$cluster_bi)] <- "Not significant"
+
+# Quick summary
+# Categorize p-values
+garden_analysis3_subset$p_category_bi <- cut(
+  garden_analysis3_subset$p_value_bi,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("p <= 0.001", "p <= 0.01", "p <= 0.05", "Not significant"),
+  right = TRUE
+)
+
+# Summarize number and percentage of gardens per cluster
+cluster_summary <- garden_analysis3_subset %>%
+  group_by(cluster_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset) * 100,
+    .groups = "drop"
+  )
+
+# Summarize number and percentage of gardens per p-value category
+pval_summary <- garden_analysis3_subset %>%
+  group_by(p_category_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset) * 100,
+    .groups = "drop"
+  )
+
+# Print summaries
+cluster_summary
+pval_summary
+
+global_moran <- moran_bv(varX, varY, tes_w_binary, nsim = 499, scale = TRUE)
+global_moran
+
+```
+
+```{r}
+library(bispdep)
+library(dplyr)
+
+gardens_analysis3 <- all_gardens_15[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50", "risk50")]
+
+garden_analysis3_subset <- gardens_analysis3[is.finite(gardens_analysis3$UGEI_50h), ]
+
+# Assume garden_analysis3_subset already cleaned and neighbors defined as tes_w_binary
+
+# Create a neighbor list
+list_nb <- poly2nb(garden_analysis3_subset, queen=TRUE,  snap=10)
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+empty_nb <- which(card(list_nb) == 0)
+empty_nb  
+
+# Remove polygons with empty neighbor sets from the data
+garden_analysis3_subset <- garden_analysis3_subset[-empty_nb, ]
+
+# Now that we removed empty neighbor sets (tes_subset)
+# Identify neighbors with queen contiguity (edge/vertex touching)
+tes_nb <- poly2nb(garden_analysis3_subset, queen=TRUE,  snap=10)
+
+# Binary weighting assigns a weight of 1 to all neighboring features 
+# and a weight of 0 to all other features
+tes_w_binary <- nb2listw(tes_nb, style="W")
+
+# Variables
+varX <- garden_analysis3_subset$risk50   # dependent
+varY <- garden_analysis3_subset$BAFper_50  # explanatory
+
+# Run bivariate Local Moran's I
+local_bi <- bispdep::localmoran.bi(varX,varY,tes_w_binary,alternative = "two.sided")
+# Inspect results
+head(local_bi)
+
+# Add key columns to your data
+garden_analysis3_subset$Ii_bi <- local_bi[, "Ixyi"]
+garden_analysis3_subset$Z_Ii_bi <- local_bi[, "Z.Ixyi"]
+garden_analysis3_subset$p_value_bi <- local_bi[, "Pr(z != 0)"]
+
+# Spatial lag of varY for cluster assignment
+varY_lag <- lag.listw(tes_w_binary, varY)
+
+# Mean values
+varX_mean <- mean(varX, na.rm=TRUE)
+varY_lag_mean <- mean(varY_lag, na.rm=TRUE)
+
+# Classify bivariate clusters
+garden_analysis3_subset$cluster_bi <- NA
+garden_analysis3_subset$cluster_bi[
+  varX > varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "High-High"
+garden_analysis3_subset$cluster_bi[
+  varX < varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "Low-Low"
+garden_analysis3_subset$cluster_bi[
+  varX > varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "High-Low"
+garden_analysis3_subset$cluster_bi[
+  varX < varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset$p_value_bi <= 0.05] <- "Low-High"
+garden_analysis3_subset$cluster_bi[is.na(garden_analysis3_subset$cluster_bi)] <- "Not significant"
+
+# Quick summary
+# Categorize p-values
+garden_analysis3_subset$p_category_bi <- cut(
+  garden_analysis3_subset$p_value_bi,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("p <= 0.001", "p <= 0.01", "p <= 0.05", "Not significant"),
+  right = TRUE
+)
+
+# Summarize number and percentage of gardens per cluster
+cluster_summary <- garden_analysis3_subset %>%
+  group_by(cluster_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset) * 100,
+    .groups = "drop"
+  )
+
+# Summarize number and percentage of gardens per p-value category
+pval_summary <- garden_analysis3_subset %>%
+  group_by(p_category_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset) * 100,
+    .groups = "drop"
+  )
+
+# Print summaries
+cluster_summary
+pval_summary
+
+global_moran <- moran_bv(varX, varY, tes_w_binary, nsim = 499, scale = TRUE)
+global_moran
+```
+
+
+#PCA analyse
+```{r}
+#run UGEI cluster analysis before!!!!
+pca_vars <- garden_analysis3_subset[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","exp50", "BAF1_50","BAF2_50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50")]
+
+pca_vars <- st_drop_geometry(pca_vars)
+pca_vars <- na.omit(pca_vars)
+# Scale the variables
+pca_scaled <- scale(pca_vars)
+
+pca_res <- prcomp(pca_scaled, center = TRUE, scale. = TRUE)
+summary(pca_res)   # variance explained
+
+library(factoextra)
+
+# Add cluster categories to metadata
+clusters <- garden_analysis3_subset$cluster
+
+# Create a named vector of nicer labels
+var_labels <- c(
+  BAFper_50   = "Effic",
+  BAFtot_50   = "Gap",
+  TWIrisk50   = "Flood",
+  LSTrisk50   = "Heat",
+  exp50       = "Pop Dens",
+  BAF1_50     = "Contr",
+  BAF2_50     = "Pot",
+  BIMDhe50     = "Health",
+  BIMDc50      = "Crime",
+  BIMDho50     = "Housing",
+  STATUNEMP5  = "Unemp",
+  STATHH150    = "Single",
+  STATHH_K50   = "Children",
+  STATRent50   = "Rent",
+  STATEDU50    = "Edu",
+  STATEld50    = "Eld",
+  STATEU50     = "Eur",
+  STATN_EU50   = "Non-Eur"
+)
+
+# Update rownames of the rotation matrix (variables)
+rownames(pca_res$rotation) <- var_labels[rownames(pca_res$rotation)]
+
+
+library(factoextra)
+
+FL <- fviz_pca_biplot(
+  pca_res, 
+  geom.ind = "point", 
+  col.ind = clusters,  # color by cluster
+  palette = c(
+    "High-High"="#407ca2",
+    "Low-Low"="#c85a5a",
+    "High-Low"="#c6d9e4",
+    "Low-High"="#f7d9d9",
+    "Not significant"="grey70"
+  ),
+  col.var = "black",   # variable arrows/labels
+  addEllipses = TRUE, 
+  legend.title = "LISA cluster",
+  repel = TRUE,
+  # Increase font sizes
+  labelsize = 6,          # variable labels
+  pointsize = 3           # observation points
+) +
+  ggtitle("A. PCA Biplot – Flemish cities") +
+  theme(
+    text = element_text(size = 26),       # base text size for all
+    plot.title = element_text(size = 28, face = "bold", hjust = 0.5),
+    legend.title = element_text(size = 22),
+    legend.text = element_text(size = 20)
+  )
+
+
+# Contribution of variables to PC1
+PC1_F <- fviz_contrib(pca_res, choice = "var", axes = 1, 
+             top = 20, # optionally limit number of variables shown
+             ggtheme = theme_minimal()) +
+  scale_x_discrete(labels = var_labels)
+
+# Contribution of variables to PC2
+PC2_F <- fviz_contrib(pca_res, choice = "var", axes = 2, 
+             top = 20,
+             ggtheme = theme_minimal()) +
+  scale_x_discrete(labels = var_labels)
+
+FL
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/Flanders_PCA.png", FL, width = 15, height = 15, dpi = 300)
+
+```
+
+#Random forest
+```{r}
+library(randomForest)
+
+pca_vars <- garden_analysis3_subset[, c("BAF1_50","BAFper_50", "TWIrisk50","LSTrisk50","exp50", "BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50")]
+
+
+rf_model <- randomForest(as.factor(cluster) ~ BAF1_50 + BAFper_50 + BAF2_50 + BAFtot_50 + TWIrisk50 + LSTrisk50 + exp50+
+                           BIMDhe50 + BIMDc50 + BIMDho50 + STATUNEMP5 + STATHH150 + STATHH_K50 + STATRent50 + STATEDU50 + STATEld50 + STATEU50 + STATN_EU50,
+                         data=garden_analysis3_subset %>% filter(cluster %in% c("High-High","Low-Low")), importance=TRUE, ntree=500)
+
+varImpPlot(rf_model, type=1)
+
+imp_df <- as.data.frame(importance(rf_model, type = 1))
+imp_df$Variable <- rownames(imp_df)
+
+# Define a lookup table of nicer labels
+labels <- c(
+  "BAF1_50" = "Garden Adaptation Contribution",
+  "BAFper_50" = "Garden Contribution Efficiency",
+  "BAFtot_50" = "Garden Potential Gap",
+  "BAF2_50" = "Garden Adaptation Potential",
+  "exp50"       = "Population density",
+  "TWIrisk50"   = "Flood risk",
+  "LSTrisk50"   = "Heat risk",
+  "BIMDhe50"    = "Health Deprivation",
+  "BIMDc50"     = "Crime Deprivation",
+  "BIMDho50"    = "Housing Deprivation",
+  "STATUNEMP5"  = "Unemployment",
+  "STATHH150"   = "Single Households",
+  "STATHH_K50"  = "Children",
+  "STATRent50"  = "Rentals",
+  "STATEDU50"   = "Lower levels of Education",
+  "STATEld50"   = "Elderly",
+  "STATEU50"    = "European Immigrants",
+  "STATN_EU50"  = "Non-European Immigrants"
+)
+
+# Replace with nicer names
+imp_df$Variable <- dplyr::recode(imp_df$Variable, !!!labels)
+
+library(ggplot2)
+FLRF <- ggplot(imp_df, aes(x = `MeanDecreaseAccuracy`, y = reorder(Variable, `MeanDecreaseAccuracy`))) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_segment(aes(x = 0, xend = `MeanDecreaseAccuracy`, y = Variable, yend = Variable), color = "gray") +
+  labs(x = "Mean Decrease Accuracy", y = "", title = "Flanders - Random Forest Variable Importance") +
+  theme_minimal(base_size = 20)
+
+FLRF
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/Flanders_RF.png", FLRF, width = 15, height = 15, dpi = 300)
+
+```
+
+```{r}
+gardens_analysis2 <- all_gardens_15[, c("TWIrisk50","LSTrisk50", "BAF1_50","BAF2_50","BIMDhe50", "BIMDc50","BIMDho50","STATUNEMP5","STATHH150", "STATHH_K50","STATRent50", "STATEDU50","STATEld50","STATEU50","STATN_EU50", "garden_50", "bldg_50","UGEI_50","exp50")]
+
+gardens_analysis2 <- st_drop_geometry(gardens_analysis2)
+# Convert all columns to numeric
+gardens_analysis2[] <- lapply(gardens_analysis2, function(x) as.numeric(as.character(x)))
+
+hist(gardens_analysis2$UGEI_50)
+
+# Calculate Spearman correlation coefficients
+cor_matrix <- cor(gardens_analysis2, method = "spearman", use="complete.obs")
+
+# Create a correlation heatmap
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black",
+  title = "Spearman Correlation Heatmap"
+)
+
+# make a copy to keep your original data safe
+gardens_scaled <- gardens_analysis2  
+
+# standardize all predictors except the outcome
+predictors <- c("TWIrisk50", "LSTrisk50", "BIMDhe50", "BIMDc50", "BIMDho50", 
+                "STATUNEMP5", "STATHH150", "STATHH_K50", "STATRent50", 
+                "STATEDU50", "STATEld50", "STATEU50", "STATN_EU50","exp50")
+
+gardens_scaled[predictors] <- scale(gardens_scaled[predictors])
+
+rf_model <- randomForest(UGEI_50 ~ TWIrisk50 + LSTrisk50 + exp50+
+                           BIMDhe50 + BIMDc50 + BIMDho50 + STATUNEMP5 + STATHH150 + STATHH_K50 + STATRent50 + STATEDU50 + STATEld50 + STATEU50 + STATN_EU50,
+                         data=gardens_scaled,importance=TRUE, ntree=500)
+
+importance(rf_model)
+varImpPlot(rf_model)
+
+# Permutation importance (%IncMSE)
+importance_df <- as.data.frame(importance(rf_model, type = 1))
+importance_df$Variable <- rownames(importance_df)
+colnames(importance_df) <- c("Importance", "Variable")
+
+# Order by importance
+importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE), ]
+
+# Plot
+library(ggplot2)
+ggplot(importance_df, aes(x = Importance, y = reorder(Variable, Importance))) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_segment(aes(x = 0, xend = Importance, y = Variable, yend = Variable), color = "gray") +
+  labs(x = "% Increase in MSE", y = "", title = "Random Forest Variable Importance") +
+  theme_minimal(base_size = 14)
+```
+
+
+```{r}
+#relationship with garden area en building density?  
+#-- less relevant I think as population density is part of the predictors
+#-- maybe more relevant: is garden area related to hazards in general or social vulnerability? Are there more or less gardens in those areas? 
+```
+
+#Per city everything
+```{r}
+library(sf)
+library(spdep)
+library(bispdep)
+library(dplyr)
+library(purrr)
+library(factoextra)
+library(randomForest)
+library(ggplot2)
+
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results", showWarnings = FALSE)
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/pca", showWarnings = FALSE)
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/rf", showWarnings = FALSE)
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/tables", showWarnings = FALSE)
+
+var_labels <- c(
+  BAFper_50   = "Effic",
+  BAFtot_50   = "Gap",
+  TWIrisk50   = "Flood",
+  LSTrisk50   = "Heat",
+  exp50       = "Pop Dens",
+  BAF1_50     = "Contr",
+  BAF2_50     = "Pot",
+  BIMDhe50    = "Health",
+  BIMDc50     = "Crime",
+  BIMDho50    = "Housing",
+  STATUNEMP5  = "Unemp",
+  STATHH150   = "Single",
+  STATHH_K50  = "Children",
+  STATRent50  = "Rent",
+  STATEDU50   = "Edu",
+  STATEld50   = "Eld",
+  STATEU50    = "Eur",
+  STATN_EU50  = "Non-Eur"
+)
+
+rf_labels <- c(
+  "BAF1_50"     = "Garden Adaptation Contribution",
+  "BAFper_50"   = "Garden Contribution Efficiency",
+  "BAFtot_50"   = "Garden Potential Gap",
+  "BAF2_50"     = "Garden Adaptation Potential",
+  "exp50"       = "Population density",
+  "TWIrisk50"   = "Flood risk",
+  "LSTrisk50"   = "Heat risk",
+  "BIMDhe50"    = "Health Deprivation",
+  "BIMDc50"     = "Crime Deprivation",
+  "BIMDho50"    = "Housing Deprivation",
+  "STATUNEMP5"  = "Unemployment",
+  "STATHH150"   = "Single Households",
+  "STATHH_K50"  = "Children",
+  "STATRent50"  = "Rentals",
+  "STATEDU50"   = "Lower levels of Education",
+  "STATEld50"   = "Elderly",
+  "STATEU50"    = "European Immigrants",
+  "STATN_EU50"  = "Non-European Immigrants"
+)
+
+niscode_names <- c(
+  "11002" = "Antwerp",
+  "12025" = "Mechelen",
+  "13040" = "Turnhout",
+  "24062" = "Leuven",
+  "31005" = "Brugge",
+  "34022" = "Kortrijk",
+  "35013" = "Ostend",
+  "36015" = "Roeselare",
+  "41002" = "Aalst",
+  "44021" = "Ghent",
+  "46021" = "Sint-Niklaas",
+  "71016" = "Genk",
+  "71022" = "Hasselt"
+)
+
+gardens_by_nis <- split(all_gardens_15, all_gardens_15$NISCODE)
+
+run_hotspot_nis <- function(x) {
+
+  x <- x[is.finite(x$UGEI_50h), ]
+  if (nrow(x) < 5) return(NULL)
+
+  nb <- poly2nb(x, queen = TRUE, snap = 10)
+  iso <- which(card(nb) == 0)
+  if (length(iso) > 0) {
+    x <- x[-iso, ]
+    nb <- poly2nb(x, queen = TRUE, snap = 10)
+  }
+
+  lw <- nb2listw(nb, style = "W")
+  lm <- localmoran(x$UGEI_50h, lw)
+
+  x$p_value <- lm[, "Pr(z != E(Ii))"]
+  x$UGEI_lag <- lag.listw(lw, x$UGEI_50h)
+  mu <- mean(x$UGEI_50h, na.rm = TRUE)
+
+  x$cluster <- "Not significant"
+  sig <- x$p_value <= 0.05
+  x$cluster[sig & x$UGEI_50h > mu & x$UGEI_lag > mu] <- "High-High"
+  x$cluster[sig & x$UGEI_50h < mu & x$UGEI_lag < mu] <- "Low-Low"
+  x$cluster[sig & x$UGEI_50h > mu & x$UGEI_lag < mu] <- "High-Low"
+  x$cluster[sig & x$UGEI_50h < mu & x$UGEI_lag > mu] <- "Low-High"
+
+  x
+}
+
+hotspot_results <- map(gardens_by_nis, run_hotspot_nis)
+hotspot_results <- hotspot_results[!map_lgl(hotspot_results, is.null)]
+
+run_pca_nis <- function(x, nis) {
+
+  # Select only PCA vars + cluster
+  x_pca <- x %>%
+    select(all_of(names(var_labels)), cluster) %>%
+    st_drop_geometry() %>%
+    na.omit()
+
+  if (nrow(x_pca) < 10) return(NULL)
+
+  # Separate variables and clusters
+  vars     <- x_pca[, names(var_labels)]
+  clusters <- x_pca$cluster
+
+  # PCA
+  pca <- prcomp(vars, scale. = TRUE)
+
+  # Rename variable loadings
+  rownames(pca$rotation) <- var_labels[rownames(pca$rotation)]
+
+  # Translate NISCODE → city name
+  city_name <- niscode_names[as.character(nis)]
+  if (is.na(city_name)) city_name <- paste("NIS", nis)
+
+  # Plot
+  p <- fviz_pca_biplot(
+    pca,
+    geom.ind = "point",
+    col.ind = clusters,
+    col.var = "black",        # ✅ variable arrows & labels
+    palette = c(
+      "High-High" = "#407ca2",
+      "Low-Low"  = "#c85a5a",
+      "High-Low" = "#c6d9e4",
+      "Low-High" = "#f7d9d9",
+      "Not significant" = "grey70"
+    ),
+    addEllipses = TRUE,
+    legend.title = "LISA cluster",
+    repel = TRUE
+  ) +
+    ggtitle(paste("PCA –", city_name))
+
+  ggsave(
+    paste0(
+      "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/pca/PCA_",
+      city_name, ".png"
+    ),
+    p,
+    width = 10, height = 10, dpi = 300
+  )
+  
+  return(p)
+
+  pca
+}
+
+pca_results <- imap(hotspot_results, run_pca_nis)
+
+run_pca_nis <- function(x, nis) {
+
+  x_pca <- x %>%
+    select(all_of(names(var_labels))) %>%
+    st_drop_geometry() %>%
+    na.omit()
+
+  if (nrow(x_pca) < 10) return(NULL)
+
+  pca <- prcomp(x_pca, scale. = TRUE)
+
+  loadings <- as.data.frame(pca$rotation[, 1:2]) %>%
+    tibble::rownames_to_column("variable") %>%
+    mutate(
+      variable = var_labels[variable],
+      city = niscode_names[as.character(nis)]
+    )
+
+  loadings
+}
+
+pca_loadings <- imap_dfr(hotspot_results, run_pca_nis)
+
+pca_var_labels <- c(
+  `Effic`    = "Garden adaptation efficiency",
+  `Gap`      = "Garden potential gap",
+  `Flood`    = "Flood risk",
+  `Heat`     = "Heat risk",
+  `Pop Dens` = "Population density",
+  `Contr`    = "Garden adaptation contribution",
+  `Pot`      = "Garden potential contribution",
+  `Health`   = "Health deprivation",
+  `Crime`    = "Crime deprivation",
+  `Housing`  = "Housing deprivation",
+  `Unemp`    = "Unemployment",
+  `Single`   = "Single households",
+  `Children` = "Children",
+  `Rent`     = "Rentals",
+  `Edu`      = "Lower educational attainment",
+  `Eld`      = "Elderly",
+  `Eur`      = "European immigrants",
+  `Non-Eur` = "Non-European immigrants"
+)
+
+pca_loadings <- pca_loadings %>%
+  mutate(variable = pca_var_labels[variable])
+
+# Order variables by mean absolute PC1 loading
+var_order_pc1 <- pca_loadings %>%
+  group_by(variable) %>%
+  summarise(mean_loading = mean(abs(PC1), na.rm = TRUE)) %>%
+  arrange(mean_loading) %>%
+  pull(variable)
+
+p_pc1 <- ggplot(
+  pca_loadings %>% mutate(variable = factor(variable, levels = var_order_pc1)),
+  aes(x = city, y = variable, fill = PC1)
+) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(PC1, 2)), size = 6) +
+  scale_fill_gradient(
+    low = "white",
+    high = "#855a6e",
+    na.value = "grey90",
+    name = "PC1 loading",
+    guide = guide_colorbar(
+    barwidth = 18,   # ⬅ increase this
+    barheight = 0.8 # optional: keeps it slim
+    )
+  ) +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    title = "A  PC1 loadings across cities"
+  )
+
+# Order variables by mean absolute PC2 loading
+var_order_pc2 <- pca_loadings %>%
+  group_by(variable) %>%
+  summarise(mean_loading = mean(abs(PC2), na.rm = TRUE)) %>%
+  arrange(mean_loading) %>%
+  pull(variable)
+
+p_pc2 <- ggplot(
+  pca_loadings %>% mutate(variable = factor(variable, levels = var_order_pc2)),
+  aes(x = city, y = variable, fill = PC2)
+) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(PC2, 2)), size = 6) +
+  scale_fill_gradient(
+    low = "white",
+    high = "#855a6e",
+    na.value = "grey90",
+    name = "PC2 loading",
+    guide = guide_colorbar(
+    barwidth = 18,   # ⬅ increase this
+    barheight = 0.8 # optional: keeps it slim
+    )
+  ) +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    title = "B  PC2 loadings across cities"
+  )
+
+
+pca_plot <- p_pc1 / p_pc2
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/pca_plot.png", pca_plot, width = 22, height =20, dpi = 300)
+
+run_rf_nis <- function(x, nis) {
+
+  x <- x %>% filter(cluster %in% c("High-High", "Low-Low"))
+  if (nrow(x) < 20) return(NULL)
+
+  rf <- randomForest(
+    as.factor(cluster) ~ BAF1_50 + BAFper_50 + BAF2_50 + BAFtot_50 +
+      TWIrisk50 + LSTrisk50 + exp50 + BIMDhe50 + BIMDc50 + BIMDho50 +
+      STATUNEMP5 + STATHH150 + STATHH_K50 + STATRent50 +
+      STATEDU50 + STATEld50 + STATEU50 + STATN_EU50,
+    data = x,
+    importance = TRUE,
+    ntree = 500
+  )
+
+  # ---- importance table ----
+  imp_df <- importance(rf) %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("variable") %>%
+    dplyr::select(variable, MeanDecreaseAccuracy) %>%
+    dplyr::mutate(
+      variable = rf_labels[variable]
+    ) %>%
+    dplyr::arrange(MeanDecreaseAccuracy)
+  
+  # Translate NISCODE → city name
+  city_name <- niscode_names[as.character(nis)]
+  if (is.na(city_name)) city_name <- paste("NIS", nis)
+
+  # ---- lollipop plot ----
+  p <- ggplot(
+    imp_df,
+    aes(
+      x = MeanDecreaseAccuracy,
+      y = reorder(variable, MeanDecreaseAccuracy)
+    )
+  ) +
+    geom_segment(
+      aes(x = 0, xend = MeanDecreaseAccuracy, y = variable, yend = variable),
+      color = "grey70",
+      linewidth = 0.8
+    ) +
+    geom_point(
+      size = 3,
+      color = "steelblue"
+    ) +
+    labs(
+      x = "Mean Decrease Accuracy",
+      y = "",
+      title = paste("Random Forest Variable Importance – ", city_name)
+    ) +
+    theme_minimal(base_size = 26)
+
+  ggsave(
+    paste0(
+      "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/rf/RF_importance_NIS_",
+      nis, ".png"
+    ),
+    p,
+    width = 15,
+    height = 10,
+    dpi = 300
+  )
+
+  # ---- return tidy table ----
+  imp_df %>%
+    mutate(NISCODE = nis)
+  
+  return(p)
+}
+
+
+rf_tables <- imap_dfr(hotspot_results, run_rf_nis)
+write.csv(rf_tables, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/tables/RF_importance_tables.csv", row.names = FALSE)
+
+# Prepare long format with city names
+rf_long <- rf_tables %>%
+  mutate(city = niscode_names[as.character(NISCODE)]) %>%
+  select(city, variable, MeanDecreaseAccuracy)
+
+# Optional: order variables by overall importance
+variable_order <- rf_long %>%
+  group_by(variable) %>%
+  summarise(mean_imp = mean(MeanDecreaseAccuracy, na.rm = TRUE)) %>%
+  arrange(mean_imp) %>%
+  pull(variable)
+
+rf_long$variable <- factor(rf_long$variable, levels = variable_order)
+
+# Heatmap
+p1 <- ggplot(rf_long, aes(x = city, y = variable, fill = MeanDecreaseAccuracy)) +
+  geom_tile(color = "white") +  # tile borders
+  geom_text(aes(label = round(MeanDecreaseAccuracy, 1)), size = 6) +  # numbers inside tiles
+  scale_fill_gradient(low = "white", high = "#855a6e", na.value = "grey90") +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    fill = "Importance",
+    title = "Random Forest Variable Importance Across Cities (Mean Decrease in Accuracy)"
+  )
+
+p1
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/RF_importance_value.png", p1, width = 22, height = 15, dpi = 300)
+
+
+rf_long_rank <- rf_long %>%
+  group_by(city) %>%
+  mutate(rank = rank(-MeanDecreaseAccuracy, ties.method = "min")) %>%  # highest importance = rank 1
+  ungroup()
+
+p2 <- ggplot(rf_long_rank, aes(x = city, y = variable, fill = rank)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = rank), size = 6, color = "black") +
+  scale_fill_gradient(
+    low = "#855a6e",
+    high = "#f0f0f0",
+    na.value = "grey90",
+    guide = guide_colorbar(
+      reverse = TRUE,
+      barwidth = 20,
+      barheight = 0.8
+    )
+  ) +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    fill = "Rank (1 = most important)",
+    title = "Random Forest Variable Importance Across Cities (Rank Heatmap)"
+  )
+
+p2
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/RF_importance_rank.png", p2, width = 20, height = 15, dpi = 300)
+
+cluster_table <- imap_dfr(
+  hotspot_results,
+  ~ .x %>%
+    st_drop_geometry() %>%
+    count(cluster) %>%
+    mutate(
+      percent = n / sum(n) * 100,
+      NISCODE = .y
+    )
+)
+
+write.csv(cluster_table, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/tables/LISA_cluster_summary.csv", row.names = FALSE)
+
+```
+
+```{r}
+pca_antwerp  <- run_pca_nis(hotspot_results[["11002"]], "11002") +
+  ggtitle("B. PCA – Antwerp") +
+  theme(
+    text = element_text(size = 26),
+    plot.title = element_text(size = 28, face = "bold", hjust = 0),
+    legend.title = element_text(size = 22),
+    legend.text = element_text(size = 20)
+  )
+pca_turnhout <- run_pca_nis(hotspot_results[["41002"]], "41002") +
+  ggtitle("C. PCA – Aalst") +
+  theme(
+    text = element_text(size = 26),
+    plot.title = element_text(size = 28, face = "bold", hjust = 0),
+    legend.title = element_text(size = 22),
+    legend.text = element_text(size = 20)
+  )
+FL <- FL + ggtitle("A. PCA – All flemish cities") +
+  theme(
+    plot.title = element_text(size = 28, face = "bold", hjust = 0)
+  )
+
+# Combine plots
+PCA_combined <-
+  FL / (pca_antwerp | pca_turnhout) +  # Flanders on top, cities below
+  plot_layout(heights = c(2, 1)) +
+  plot_annotation(
+    title = "PCA Biplots of GCEI Clusters",
+    theme = theme(
+      plot.title = element_text(size = 30, face = "bold", hjust = 0.5)
+    )
+  )
+
+# Save
+ggsave(
+  "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/PCA_combined_Flanders_Antwerp_Turnhout.png",
+  PCA_combined,
+  width = 16,
+  height = 20,
+  dpi = 300
+)
+```
+
+#MANCHESTER
+
+#Load data
+```{r}
+#load Manchester
+Manchester_gardens <- st_read('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/Manchester/Manchester.CL_Landcover.metrics.shp')
+```
+
+```{r}
+#filter
+Manchester_gardens <- Manchester_gardens %>% filter(ex50 != 0)
+Manchester_gardens$city <- 'Manchester'
+```
+
+```{r}
+#calculate index
+Manchester_gardens$UGEI_50h <- Manchester_gardens$BAF1_50-Manchester_gardens$risk50
+#Manchester_gardens$UGEI_100h <- Manchester_gardens$BAF1_100-Manchester_gardens$risk100
+#Manchester_gardens$UGEI_200h <- Manchester_gardens$BAF1_200-Manchester_gardens$risk200
+#Manchester_gardens$UGEI_400h <- Manchester_gardens$BAF1_400-Manchester_gardens$risk400
+
+Manchester_gardens$UGEI_50p <- Manchester_gardens$BAF2_50-Manchester_gardens$risk50
+#Manchester_gardens$UGEI_100p <- Manchester_gardens$BAF2_100-Manchester_gardens$risk100
+#Manchester_gardens$UGEI_200p <- Manchester_gardens$BAF2_200-Manchester_gardens$risk200
+#Manchester_gardens$UGEI_400p <- Manchester_gardens$BAF2_400-Manchester_gardens$risk400
+```
+
+#corplot
+```{r}
+gardens_analysis_M <- Manchester_gardens[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h")]
+
+gardens_analysis_M  <- st_drop_geometry(gardens_analysis_M)
+# Convert all columns to numeric
+gardens_analysis_M[] <- lapply(gardens_analysis_M, function(x) as.numeric(as.character(x)))
+
+# Calculate Spearman correlation coefficients
+cor_matrix <- cor(gardens_analysis_M, method = "spearman", use="complete.obs")
+
+# Create a correlation heatmap
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black",
+  title = "Spearman Correlation Heatmap"
+)
+```
+
+
+#linear model
+```{r}
+gardens_analysis2_M <- Manchester_gardens[, c("TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","IMDhe50", "IMDc50","IMDho50","ONSUNEMP50","ONSHH150", "ONSHH_K50","ONSRent50", "ONSEDU50","ONSEld50","ONSEU50","ONSN_EU50","risk50","bldg_50","garden_50")]
+
+gardens_analysis2 <- st_drop_geometry(gardens_analysis2_M)
+# Convert all columns to numeric
+gardens_analysis2[] <- lapply(gardens_analysis2, function(x) as.numeric(as.character(x)))
+
+hist(gardens_analysis2$UGEI_50)
+
+# Calculate Spearman correlation coefficients
+cor_matrix <- cor(gardens_analysis2, method = "spearman", use="complete.obs")
+
+# Create a correlation heatmap
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black",
+  title = "Spearman Correlation Heatmap"
+)
+
+model <- lm(UGEI_50h ~ TWIrisk50 + LSTrisk50 + IMDhe50 + IMDc50 + IMDho50 + ONSUNEMP50 + ONSHH150 + ONSHH_K50 + ONSRent50 + ONSEDU50 + ONSEld50 + ONSEU50 + ONSN_EU50, data= gardens_analysis2)
+summary(model)
+
+# make a copy to keep your original data safe
+gardens_scaled <- gardens_analysis2  
+
+# standardize all predictors except the outcome
+predictors <- c("TWIrisk50", "LSTrisk50", "IMDhe50", "IMDc50", "IMDho50", 
+                "ONSUNEMP50", "ONSHH150", "ONSHH_K50", "ONSRent50", 
+                "ONSEDU50", "ONSEld50", "ONSEU50", "ONSN_EU50","bldg_50","garden_50")
+
+gardens_scaled[predictors] <- scale(gardens_scaled[predictors])
+
+# fit model with standardized predictors
+model_scaled <- lm(UGEI_50h ~ ., data = gardens_scaled[, c("UGEI_50h", predictors)])
+summary(model_scaled)
+
+library(DHARMa)
+# Simulate residuals
+sim_res <- simulateResiduals(model_scaled)
+# Plot diagnostics
+plot(sim_res)
+
+library(glmmTMB)
+model_tmb <- glmmTMB(UGEI_rescaled ~ ., data = gardens_scaled[, c("UGEI_50", predictors)],
+                     family = beta_family())
+
+library(DHARMa)
+sim_res <- simulateResiduals(model_tmb)
+plot(sim_res)
+
+library(dotwhisker)
+library(broom)
+library(ggplot2)
+
+# Tidy model coefficients
+coef_df <- tidy(model_scaled, conf.int = TRUE)
+coef_df <- subset(coef_df, term != "(Intercept)")
+
+# Add significance column
+coef_df$sig <- ifelse(coef_df$p.value < 0.05, "Significant", "Not Significant")
+
+# Add a dummy 'model' column (required by dwplot)
+coef_df$model <- "Standardized LM"
+
+# Optional: order predictors
+coef_df$term <- factor(coef_df$term, levels = rev(c(
+  "TWIrisk50", "LSTrisk50", "BIMDhe50", "BIMDc50", "BIMDho50",
+  "STATUNEMP5", "STATHH150", "STATHH_K50", "STATRent50",
+  "STATEDU50", "STATEld50", "STATEU50", "STATN_EU50"
+)))
+
+# Forest plot using dwplot aesthetics
+dwplot(coef_df, dot_args = list(aes(shape = sig, colour = sig), size = 4)) +
+  scale_color_manual(values = c("Significant" = "black", "Not Significant" = "grey60")) +
+  scale_shape_manual(values = c("Significant" = 16, "Not Significant" = 1)) +  # filled vs hollow
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Standardized Coefficient (β)", y = "",
+       title = "Forest Plot of Standardized Model") +
+  theme_bw(base_size = 16) +
+  theme(legend.position = "none")
+
+
+
+```
+
+
+
+
+#HOTSPOT analyse
+```{r}
+library(spdep)
+
+gardens_analysis3_M <- Manchester_gardens[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","IMDhe50", "IMDc50","IMDho50","ONSUNEMP50","ONSHH150", "ONSHH_K50","ONSRent50", "ONSEDU50","ONSEld50","ONSEU50","ONSN_EU50","risk50")]
+
+garden_analysis3_subset_M <- gardens_analysis3_M[is.finite(gardens_analysis3_M$UGEI_50h), ]
+
+# Create a neighbor list
+list_nb <- poly2nb(garden_analysis3_subset_M, queen=TRUE,  snap=10)
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+empty_nb <- which(card(list_nb) == 0)
+empty_nb  
+
+# Remove polygons with empty neighbor sets from the data
+garden_analysis3_subset_M <- garden_analysis3_subset_M[-empty_nb, ]
+
+# Now that we removed empty neighbor sets (tes_subset)
+# Identify neighbors with queen contiguity (edge/vertex touching)
+tes_nb <- poly2nb(garden_analysis3_subset_M, queen=TRUE,  snap=10)
+
+# Binary weighting assigns a weight of 1 to all neighboring features 
+# and a weight of 0 to all other features
+tes_w_binary <- nb2listw(tes_nb, style="W")
+
+# Calculate spatial lag of TreEqty
+tes_lag <- lag.listw(tes_w_binary, garden_analysis3_subset_M$UGEI_50h)
+
+# Test for global Moran I statistic 
+moran.test(garden_analysis3_subset_M$UGEI_50h, tes_w_binary)
+
+local_moran <- localmoran(garden_analysis3_subset_M$UGEI_50h, tes_w_binary)
+
+local_moran <- localmoran(garden_analysis3_subset_M$UGEI_50h, tes_w_binary)
+
+garden_analysis3_subset_M$Ii <- local_moran[, "Ii"]
+garden_analysis3_subset_M$Z_Ii <- local_moran[, "Z.Ii"]
+garden_analysis3_subset_M$p_value <- local_moran[, "Pr(z != E(Ii))"]
+
+# Spatial lag of UGEI
+garden_analysis3_subset_M$UGEI_lag <- lag.listw(tes_w_binary, garden_analysis3_subset_M$UGEI_50h)
+
+# Mean of UGEI
+UGEI_mean <- mean(garden_analysis3_subset_M$UGEI_50h, na.rm = TRUE)
+
+# Create cluster category
+garden_analysis3_subset_M$cluster <- NA
+garden_analysis3_subset_M$cluster[
+  garden_analysis3_subset_M$UGEI_50h > UGEI_mean & 
+  garden_analysis3_subset_M$UGEI_lag > UGEI_mean & 
+  garden_analysis3_subset_M$p_value <= 0.05] <- "High-High"
+
+garden_analysis3_subset_M$cluster[
+  garden_analysis3_subset_M$UGEI_50h < UGEI_mean & 
+  garden_analysis3_subset_M$UGEI_lag < UGEI_mean & 
+  garden_analysis3_subset_M$p_value <= 0.05] <- "Low-Low"
+
+garden_analysis3_subset_M$cluster[
+  garden_analysis3_subset_M$UGEI_50h > UGEI_mean & 
+  garden_analysis3_subset_M$UGEI_lag < UGEI_mean & 
+  garden_analysis3_subset_M$p_value <= 0.05] <- "High-Low"
+
+garden_analysis3_subset_M$cluster[
+  garden_analysis3_subset_M$UGEI_50h < UGEI_mean & 
+  garden_analysis3_subset_M$UGEI_lag > UGEI_mean & 
+  garden_analysis3_subset_M$p_value <= 0.05] <- "Low-High"
+
+# Everything else = not significant
+garden_analysis3_subset_M$cluster[is.na(garden_analysis3_subset_M$cluster)] <- "Not significant"
+
+# ---- New: categorize p-values ----
+garden_analysis3_subset_M$p_category <- cut(
+  garden_analysis3_subset_M$p_value,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("p <= 0.001", "p <= 0.01", "p <= 0.05", "No significance"),
+  right = TRUE
+)
+
+# Quick check of counts per cluster and p-value
+library(dplyr)
+
+summary_table <- garden_analysis3_subset_M %>%
+  group_by(p_category) %>%
+  summarise(Number_of_gardens = n(), .groups = "drop") %>%
+  mutate(Percent_of_gardens = Number_of_gardens / sum(Number_of_gardens) * 100)
+
+summary_table
+
+cluster_summary <- garden_analysis3_subset_M %>%
+  group_by(cluster) %>%
+  summarise(Number_of_gardens = n(), .groups = "drop") %>%
+  mutate(Percent_of_gardens = Number_of_gardens / sum(Number_of_gardens) * 100)
+
+cluster_summary
+```
+
+#BILISA1
+```{r}
+library(bispdep)
+library(dplyr)
+
+gardens_analysis3_M <- Manchester_gardens[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","IMDhe50", "IMDc50","IMDho50","ONSUNEMP50","ONSHH150", "ONSHH_K50","ONSRent50", "ONSEDU50","ONSEld50","ONSEU50","ONSN_EU50","risk50")]
+
+garden_analysis3_subset_M <- gardens_analysis3_M[is.finite(gardens_analysis3_M$UGEI_50h), ]
+
+# Assume garden_analysis3_subset already cleaned and neighbors defined as tes_w_binary
+
+# Create a neighbor list
+list_nb <- poly2nb(garden_analysis3_subset_M, queen=TRUE,  snap=10)
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+empty_nb <- which(card(list_nb) == 0)
+empty_nb  
+
+# Remove polygons with empty neighbor sets from the data
+garden_analysis3_subset_M <- garden_analysis3_subset_M[-empty_nb, ]
+
+# Now that we removed empty neighbor sets (tes_subset)
+# Identify neighbors with queen contiguity (edge/vertex touching)
+tes_nb <- poly2nb(garden_analysis3_subset_M, queen=TRUE,  snap=10)
+
+# Binary weighting assigns a weight of 1 to all neighboring features 
+# and a weight of 0 to all other features
+tes_w_binary <- nb2listw(tes_nb, style="W")
+
+# Variables
+varX <- garden_analysis3_subset_M$haz50   # dependent
+varY <- garden_analysis3_subset_M$BAFtot_50  # explanatory
+
+# Run bivariate Local Moran's I
+local_bi <- bispdep::localmoran.bi(varX, varY, tes_w_binary, alternative="two.sided")
+
+# Inspect results
+head(local_bi)
+
+# Add key columns to your data
+garden_analysis3_subset_M$Ii_bi <- local_bi[, "Ixyi"]
+garden_analysis3_subset_M$Z_Ii_bi <- local_bi[, "Z.Ixyi"]
+garden_analysis3_subset_M$p_value_bi <- local_bi[, "Pr(z != 0)"]
+
+# Spatial lag of varY for cluster assignment
+varY_lag <- lag.listw(tes_w_binary, varY)
+
+# Mean values
+varX_mean <- mean(varX, na.rm=TRUE)
+varY_lag_mean <- mean(varY_lag, na.rm=TRUE)
+
+# Classify bivariate clusters
+garden_analysis3_subset_M$cluster_bi <- NA
+garden_analysis3_subset_M$cluster_bi[
+  varX > varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "High-High"
+garden_analysis3_subset_M$cluster_bi[
+  varX < varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "Low-Low"
+garden_analysis3_subset_M$cluster_bi[
+  varX > varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "High-Low"
+garden_analysis3_subset_M$cluster_bi[
+  varX < varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "Low-High"
+garden_analysis3_subset_M$cluster_bi[is.na(garden_analysis3_subset_M$cluster_bi)] <- "Not significant"
+
+# Quick summary
+# Categorize p-values
+garden_analysis3_subset_M$p_category_bi <- cut(
+  garden_analysis3_subset_M$p_value_bi,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("p <= 0.001", "p <= 0.01", "p <= 0.05", "Not significant"),
+  right = TRUE
+)
+
+# Summarize number and percentage of gardens per cluster
+cluster_summary <- garden_analysis3_subset_M %>%
+  group_by(cluster_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset_M) * 100,
+    .groups = "drop"
+  )
+
+# Summarize number and percentage of gardens per p-value category
+pval_summary <- garden_analysis3_subset_M %>%
+  group_by(p_category_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset_M) * 100,
+    .groups = "drop"
+  )
+
+# Print summaries
+cluster_summary
+pval_summary
+
+global_moran <- moran_bv(varX, varY, tes_w_binary, nsim = 499, scale = TRUE)
+global_moran
+```
+
+#BILISA2
+```{r}
+library(bispdep)
+library(dplyr)
+
+gardens_analysis3_M <- Manchester_gardens[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50","UGEI_50h", "BAF1_50","BAF2_50","haz50","IMDhe50", "IMDc50","IMDho50","ONSUNEMP50","ONSHH150", "ONSHH_K50","ONSRent50", "ONSEDU50","ONSEld50","ONSEU50","ONSN_EU50","risk50")]
+
+garden_analysis3_subset_M <- gardens_analysis3_M[is.finite(gardens_analysis3_M$UGEI_50h), ]
+
+# Assume garden_analysis3_subset already cleaned and neighbors defined as tes_w_binary
+
+# Create a neighbor list
+list_nb <- poly2nb(garden_analysis3_subset_M, queen=TRUE,  snap=10)
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+empty_nb <- which(card(list_nb) == 0)
+empty_nb  
+
+# Remove polygons with empty neighbor sets from the data
+garden_analysis3_subset_M <- garden_analysis3_subset_M[-empty_nb, ]
+
+# Now that we removed empty neighbor sets (tes_subset)
+# Identify neighbors with queen contiguity (edge/vertex touching)
+tes_nb <- poly2nb(garden_analysis3_subset_M, queen=TRUE,  snap=10)
+
+# Binary weighting assigns a weight of 1 to all neighboring features 
+# and a weight of 0 to all other features
+tes_w_binary <- nb2listw(tes_nb, style="W")
+
+# Variables
+varX <- garden_analysis3_subset_M$risk50   # dependent
+varY <- garden_analysis3_subset_M$BAFper_50  # explanatory
+
+# Run bivariate Local Moran's I
+local_bi <- bispdep::localmoran.bi(varX, varY, tes_w_binary, alternative="two.sided")
+
+# Inspect results
+head(local_bi)
+
+# Add key columns to your data
+garden_analysis3_subset_M$Ii_bi <- local_bi[, "Ixyi"]
+garden_analysis3_subset_M$Z_Ii_bi <- local_bi[, "Z.Ixyi"]
+garden_analysis3_subset_M$p_value_bi <- local_bi[, "Pr(z != 0)"]
+
+# Spatial lag of varY for cluster assignment
+varY_lag <- lag.listw(tes_w_binary, varY)
+
+# Mean values
+varX_mean <- mean(varX, na.rm=TRUE)
+varY_lag_mean <- mean(varY_lag, na.rm=TRUE)
+
+# Classify bivariate clusters
+garden_analysis3_subset_M$cluster_bi <- NA
+garden_analysis3_subset_M$cluster_bi[
+  varX > varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "High-High"
+garden_analysis3_subset_M$cluster_bi[
+  varX < varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "Low-Low"
+garden_analysis3_subset_M$cluster_bi[
+  varX > varX_mean & varY_lag < varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "High-Low"
+garden_analysis3_subset_M$cluster_bi[
+  varX < varX_mean & varY_lag > varY_lag_mean & garden_analysis3_subset_M$p_value_bi <= 0.05] <- "Low-High"
+garden_analysis3_subset_M$cluster_bi[is.na(garden_analysis3_subset_M$cluster_bi)] <- "Not significant"
+
+# Quick summary
+# Categorize p-values
+garden_analysis3_subset_M$p_category_bi <- cut(
+  garden_analysis3_subset_M$p_value_bi,
+  breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+  labels = c("p <= 0.001", "p <= 0.01", "p <= 0.05", "Not significant"),
+  right = TRUE
+)
+
+# Summarize number and percentage of gardens per cluster
+cluster_summary <- garden_analysis3_subset_M %>%
+  group_by(cluster_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset_M) * 100,
+    .groups = "drop"
+  )
+
+# Summarize number and percentage of gardens per p-value category
+pval_summary <- garden_analysis3_subset_M %>%
+  group_by(p_category_bi) %>%
+  summarise(
+    Number_of_gardens = n(),
+    Percent_of_gardens = n() / nrow(garden_analysis3_subset_M) * 100,
+    .groups = "drop"
+  )
+
+# Print summaries
+cluster_summary
+pval_summary
+
+global_moran <- moran_bv(varX, varY, tes_w_binary, nsim = 499, scale = TRUE)
+global_moran
+```
+
+#PCA analyse
+```{r}
+#run UGEI cluster before!!!!
+pca_vars <- garden_analysis3_subset_M[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","exp50", "BAF1_50","BAF2_50","IMDhe50", "IMDc50","IMDho50","ONSUNEMP50","ONSHH150", "ONSHH_K50","ONSRent50", "ONSEDU50","ONSEld50","ONSEU50","ONSN_EU50")]
+
+pca_vars <- st_drop_geometry(pca_vars)
+# Scale the variables
+pca_scaled <- scale(pca_vars)
+
+pca_res <- prcomp(pca_scaled, center = TRUE, scale. = TRUE)
+summary(pca_res)   # variance explained
+
+library(factoextra)
+
+# Add cluster categories to metadata
+clusters <- garden_analysis3_subset_M$cluster
+
+# Create a named vector of nicer labels
+var_labels <- c(
+  BAFper_50   = "CEI",
+  BAFtot_50   = "PGI",
+  TWIrisk50   = "Flood",
+  LSTrisk50   = "Heat",
+  exp50       = "Pop Dens",
+  BAF1_50     = "Contr",
+  BAF2_50     = "Pot",
+  IMDhe50     = "Health",
+  IMDc50      = "Crime",
+  IMDho50     = "Housing",
+  ONSUNEMP50  = "Unemp",
+  ONSHH150    = "Single",
+  ONSHH_K50   = "Children",
+  ONSRent50   = "Rent",
+  ONSEDU50    = "Edu",
+  ONSEld50    = "Eld",
+  ONSEU50     = "Eur",
+  ONSN_EU50   = "Non-Eur"
+)
+
+# Update rownames of the rotation matrix (variables)
+rownames(pca_res$rotation) <- var_labels[rownames(pca_res$rotation)]
+
+
+library(factoextra)
+
+M <- fviz_pca_biplot(
+  pca_res, 
+  geom.ind = "point", 
+  col.ind = clusters,  # color by cluster
+  palette = c("High-High"="#407ca2",
+              "Low-Low"="#c85a5a",
+              "High-Low"="#c6d9e4",
+              "Low-High"="#f7d9d9",
+              "Not significant"="grey70"),
+  col.var = "black",   # variable arrows/labels
+  addEllipses = TRUE, 
+  legend.title = "LISA cluster",
+  repel = TRUE
+) + ggtitle("B. PCA Biplot – Manchester")
+
+
+# Contribution of variables to PC1
+PC1_M <- fviz_contrib(pca_res, choice = "var", axes = 1, 
+             top = 20, # optionally limit number of variables shown
+             ggtheme = theme_minimal()) +
+  scale_x_discrete(labels = var_labels)
+
+# Contribution of variables to PC2
+PC2_M <- fviz_contrib(pca_res, choice = "var", axes = 2, 
+             top = 20,
+             ggtheme = theme_minimal()) +
+  scale_x_discrete(labels = var_labels)
+
+```
+```{r}
+# Combine with shared guides
+combined <- FL + M + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/combined_biplots.png", combined, width = 14, height = 7, dpi = 300)
+```
+
+```{r}
+library(patchwork)
+
+# Add titles directly when arranging
+combined_plot <- (PC1_F + ggtitle("A. PC1 - Flanders")) +
+                 (PC1_M + ggtitle("B. PC1 - Manchester")) +
+                 (PC2_F + ggtitle("C. PC2 - Flanders")) +
+                 (PC2_M + ggtitle("D. PC2 - Manchester")) +
+                 plot_layout(ncol = 1)
+
+combined_plot
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/combined_PCAcontr.png", combined_plot, width = 7, height = 14, dpi = 300)
+```
+
+#Random Forest
+```{r}
+library(randomForest)
+
+pca_vars <- garden_analysis3_subset_M[, c("BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","exp50", "BAF1_50","BAF2_50","IMDhe50", "IMDc50","IMDho50","ONSUNEMP50","ONSHH150", "ONSHH_K50","ONSRent50", "ONSEDU50","ONSEld50","ONSEU50","ONSN_EU50")]
+
+
+rf_model <- randomForest(as.factor(cluster) ~ BAF1_50 + BAFper_50 + BAFtot_50 + BAF2_50 + TWIrisk50 + LSTrisk50 + exp50 +
+                           IMDhe50 + IMDc50 + IMDho50 + ONSUNEMP50 +ONSHH150 + ONSHH_K50 + ONSRent50 + ONSEDU50 + ONSEld50 + ONSEU50 + ONSN_EU50, 
+                         data=garden_analysis3_subset_M %>% filter(cluster %in% c("High-High","Low-Low")), importance=TRUE, ntree=500)
+
+importance(rf_model)
+varImpPlot(rf_model)
+
+varImpPlot(rf_model, type=1)
+
+imp_df <- as.data.frame(importance(rf_model, type = 1))
+imp_df$Variable <- rownames(imp_df)
+
+# Define a lookup table of nicer labels
+labels <- c(
+  "BAF1_50" = "Garden Contribution Score",
+  "BAFper_50" = "CEI",
+  "BAFtot_50" = "PGI",
+  "BAF2_50" = "Garden Potential Score",
+  "exp50"       = "Population density",
+  "TWIrisk50"   = "Flood risk",
+  "LSTrisk50"   = "Heat risk",
+  "IMDhe50"    = "Health Deprivation",
+  "IMDc50"     = "Crime Deprivation",
+  "IMDho50"    = "Housing Deprivation",
+  "ONSUNEMP50"  = "Unemployement",
+  "ONSHH150"   = "Single Households",
+  "ONSHH_K50"  = "Children",
+  "ONSRent50"  = "Rentals",
+  "ONSEDU50"   = "Short Educated people",
+  "ONSEld50"   = "Elderly",
+  "ONSEU50"    = "European Immigrants",
+  "ONSN_EU50"  = "Non-European Immigrants"
+)
+
+# Replace with nicer names
+imp_df$Variable <- dplyr::recode(imp_df$Variable, !!!labels)
+
+library(ggplot2)
+MRF <- ggplot(imp_df, aes(x = `MeanDecreaseAccuracy`, y = reorder(Variable, `MeanDecreaseAccuracy`))) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_segment(aes(x = 0, xend = `MeanDecreaseAccuracy`, y = Variable, yend = Variable), color = "gray") +
+  labs(x = "Mean Decrease Accuracy", y = "", title = "B. Manchester - Random Forest Variable Importance") +
+  theme_minimal(base_size = 20)
+
+MRF
+```
+
+```{r}
+library(patchwork)
+
+# Example: M and FL are both ggplot objects
+combined <- FLRF / MRF + plot_layout(nrow = 2)
+
+# Save with width/height
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/combined_plots_RF.png", combined, width = 15, height = 20, dpi = 300)
+
+```
+
+
+#Per city everything
+```{r}
+library(sf)
+library(spdep)
+library(bispdep)
+library(dplyr)
+library(purrr)
+library(factoextra)
+library(randomForest)
+library(ggplot2)
+
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results", showWarnings = FALSE)
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/pca", showWarnings = FALSE)
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/rf", showWarnings = FALSE)
+dir.create("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/tables", showWarnings = FALSE)
+
+var_labels <- c(
+  BAFper_50   = "Effic",
+  BAFtot_50   = "Gap",
+  TWIrisk50   = "Flood",
+  LSTrisk50   = "Heat",
+  exp50       = "Pop Dens",
+  BAF1_50     = "Contr",
+  BAF2_50     = "Pot",
+  BIMDhe50    = "Health",
+  BIMDc50     = "Crime",
+  BIMDho50    = "Housing",
+  STATUNEMP5  = "Unemp",
+  STATHH150   = "Single",
+  STATHH_K50  = "Children",
+  STATRent50  = "Rent",
+  STATEDU50   = "Edu",
+  STATEld50   = "Eld",
+  STATEU50    = "Eur",
+  STATN_EU50  = "Non-Eur"
+)
+
+var_labels2 <- c(
+  BAFper_50   = "Effic",
+  BAFtot_50   = "Gap",
+  TWIrisk50   = "Flood",
+  LSTrisk50   = "Heat",
+  exp50       = "Pop Dens",
+  BAF1_50     = "Contr",
+  BAF2_50     = "Pot",
+  IMDhe50     = "Health",
+  IMDc50      = "Crime",
+  IMDho50     = "Housing",
+  ONSUNEMP50  = "Unemp",
+  ONSHH150    = "Single",
+  ONSHH_K50   = "Children",
+  ONSRent50   = "Rent",
+  ONSEDU50    = "Edu",
+  ONSEld50    = "Eld",
+  ONSEU50     = "Eur",
+  ONSN_EU50   = "Non-Eur"
+)
+
+get_var_labels <- function(nis) {
+  if (as.character(nis) == "Manchester") {
+    return(var_labels2)
+  } else {
+    return(var_labels)
+  }
+}
+
+rf_labels <- c(
+  "BAF1_50"     = "Garden Adaptation Contribution",
+  "BAFper_50"   = "Garden Contribution Efficiency",
+  "BAFtot_50"   = "Garden Potential Gap",
+  "BAF2_50"     = "Garden Adaptation Potential",
+  "exp50"       = "Population density",
+  "TWIrisk50"   = "Flood risk",
+  "LSTrisk50"   = "Heat risk",
+  "BIMDhe50"    = "Health Deprivation",
+  "BIMDc50"     = "Crime Deprivation",
+  "BIMDho50"    = "Housing Deprivation",
+  "STATUNEMP5"  = "Unemployment",
+  "STATHH150"   = "Single Households",
+  "STATHH_K50"  = "Children",
+  "STATRent50"  = "Rentals",
+  "STATEDU50"   = "Lower levels of Education",
+  "STATEld50"   = "Elderly",
+  "STATEU50"    = "European Immigrants",
+  "STATN_EU50"  = "Non-European Immigrants"
+)
+
+rf_labels2 <- c(
+  "BAF1_50"     = "Garden Adaptation Contribution",
+  "BAFper_50"   = "Garden Contribution Efficiency",
+  "BAFtot_50"   = "Garden Potential Gap",
+  "BAF2_50"     = "Garden Adaptation Potential",
+  "exp50"       = "Population density",
+  "TWIrisk50"   = "Flood risk",
+  "LSTrisk50"   = "Heat risk",
+  "IMDhe50"    = "Health Deprivation",
+  "IMDc50"     = "Crime Deprivation",
+  "IMDho50"    = "Housing Deprivation",
+  "ONSUNEMP50"  = "Unemployment",
+  "ONSHH150"   = "Single Households",
+  "ONSHH_K50"  = "Children",
+  "ONSRent50"  = "Rentals",
+  "ONSEDU50"   = "Lower levels of Education",
+  "ONSEld50"   = "Elderly",
+  "ONSEU50"    = "European Immigrants",
+  "ONSN_EU50"  = "Non-European Immigrants"
+)
+get_rf_labels <- function(nis) {
+  if (as.character(nis) == "Manchester") {
+    return(rf_labels2)
+  } else {
+    return(rf_labels)
+  }
+}
+
+niscode_names <- c(
+  "11002" = "Antwerp",
+  "12025" = "Mechelen",
+  "13040" = "Turnhout",
+  "24062" = "Leuven",
+  "31005" = "Bruges",
+  "34022" = "Kortrijk",
+  "35013" = "Ostend",
+  "36015" = "Roeselare",
+  "41002" = "Aalst",
+  "44021" = "Ghent",
+  "46021" = "Sint-Niklaas",
+  "71016" = "Genk",
+  "71022" = "Hasselt",
+  "Manchester" ="Manchester"
+)
+
+Manchester_gardens$NISCODE <- "Manchester"
+
+manchester_df <- Manchester_gardens %>% st_transform(st_crs(all_gardens_15)) 
+
+combined_data <- bind_rows(all_gardens_15, manchester_df)
+
+gardens_by_nis <- split(combined_data, combined_data$NISCODE)
+
+run_hotspot_nis <- function(x) {
+
+  x <- x[is.finite(x$UGEI_50h), ]
+  if (nrow(x) < 5) return(NULL)
+
+  nb <- poly2nb(x, queen = TRUE, snap = 10)
+  iso <- which(card(nb) == 0)
+  if (length(iso) > 0) {
+    x <- x[-iso, ]
+    nb <- poly2nb(x, queen = TRUE, snap = 10)
+  }
+
+  lw <- nb2listw(nb, style = "W")
+  lm <- localmoran(x$UGEI_50h, lw)
+
+  x$p_value <- lm[, "Pr(z != E(Ii))"]
+  x$UGEI_lag <- lag.listw(lw, x$UGEI_50h)
+  mu <- mean(x$UGEI_50h, na.rm = TRUE)
+
+  x$cluster <- "Not significant"
+  sig <- x$p_value <= 0.05
+  x$cluster[sig & x$UGEI_50h > mu & x$UGEI_lag > mu] <- "High-High"
+  x$cluster[sig & x$UGEI_50h < mu & x$UGEI_lag < mu] <- "Low-Low"
+  x$cluster[sig & x$UGEI_50h > mu & x$UGEI_lag < mu] <- "High-Low"
+  x$cluster[sig & x$UGEI_50h < mu & x$UGEI_lag > mu] <- "Low-High"
+
+  x
+}
+
+hotspot_results <- map(gardens_by_nis, run_hotspot_nis)
+hotspot_results <- hotspot_results[!map_lgl(hotspot_results, is.null)]
+
+run_pca_nis <- function(x, nis) {
+
+  vlabels <- get_var_labels(nis)
+
+  x_pca <- x %>%
+    select(all_of(names(vlabels)), cluster) %>%
+    st_drop_geometry() %>%
+    na.omit()
+
+  if (nrow(x_pca) < 10) return(NULL)
+
+  vars     <- x_pca[, names(vlabels)]
+  clusters <- x_pca$cluster
+
+  pca <- prcomp(vars, scale. = TRUE)
+
+  # Rename PCA loadings
+  rownames(pca$rotation) <- vlabels[rownames(pca$rotation)]
+
+  city_name <- niscode_names[as.character(nis)]
+  if (is.na(city_name)) city_name <- paste("NIS", nis)
+
+  p <- fviz_pca_biplot(
+    pca,
+    geom.ind = "point",
+    col.ind = clusters,
+    col.var = "black",
+    palette = c(
+      "High-High" = "#407ca2",
+      "Low-Low"  = "#c85a5a",
+      "High-Low" = "#c6d9e4",
+      "Low-High" = "#f7d9d9",
+      "Not significant" = "grey70"
+    ),
+    addEllipses = TRUE,
+    legend.title = "LISA cluster",
+    repel = TRUE
+  ) +
+    ggtitle(paste("PCA –", city_name))
+
+  ggsave(
+    paste0(
+      "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/pca/PCA_",
+      city_name, ".png"
+    ),
+    p,
+    width = 10, height = 10, dpi = 300
+  )
+
+  return(p)
+}
+
+pca_results <- imap(hotspot_results, run_pca_nis)
+
+run_pca_nis <- function(x, nis) {
+
+  vlabels <- get_var_labels(nis)
+
+  x_pca <- x %>%
+    select(all_of(names(vlabels))) %>%
+    st_drop_geometry() %>%
+    na.omit()
+
+  if (nrow(x_pca) < 10) return(NULL)
+
+  pca <- prcomp(x_pca, scale. = TRUE)
+
+  loadings <- as.data.frame(pca$rotation[, 1:2]) %>%
+    tibble::rownames_to_column("variable") %>%
+    mutate(
+      variable = vlabels[variable],
+      city = niscode_names[as.character(nis)]
+    )
+
+  loadings
+}
+
+pca_loadings <- imap_dfr(hotspot_results, run_pca_nis)
+
+pca_var_labels <- c(
+  `Effic`    = "Garden adaptation efficiency",
+  `Gap`      = "Garden potential gap",
+  `Flood`    = "Flood risk",
+  `Heat`     = "Heat risk",
+  `Pop Dens` = "Population density",
+  `Contr`    = "Garden adaptation contribution",
+  `Pot`      = "Garden potential contribution",
+  `Health`   = "Health deprivation",
+  `Crime`    = "Crime deprivation",
+  `Housing`  = "Housing deprivation",
+  `Unemp`    = "Unemployment",
+  `Single`   = "Single households",
+  `Children` = "Children",
+  `Rent`     = "Rentals",
+  `Edu`      = "Lower educational attainment",
+  `Eld`      = "Elderly",
+  `Eur`      = "European immigrants",
+  `Non-Eur` = "Non-European immigrants"
+)
+
+pca_loadings <- pca_loadings %>%
+  mutate(variable = pca_var_labels[variable])
+
+# Force Manchester to be last
+city_order <- c(
+  setdiff(unique(pca_loadings$city), "Manchester"),
+  "Manchester"
+)
+
+pca_loadings$city <- factor(pca_loadings$city, levels = city_order)
+
+
+# Order variables by mean absolute PC1 loading
+var_order_pc1 <- pca_loadings %>%
+  group_by(variable) %>%
+  summarise(mean_loading = mean(abs(PC1), na.rm = TRUE)) %>%
+  arrange(mean_loading) %>%
+  pull(variable)
+
+p_pc1 <- ggplot(
+  pca_loadings %>% mutate(variable = factor(variable, levels = var_order_pc1)),
+  aes(x = city, y = variable, fill = PC1)
+) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(PC1, 2)), size = 6) +
+  scale_fill_gradient(
+    low = "white",
+    high = "#855a6e",
+    na.value = "grey90",
+    name = "PC1 loading",
+    guide = guide_colorbar(
+    barwidth = 18,   # ⬅ increase this
+    barheight = 0.8 # optional: keeps it slim
+    )
+  ) +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    title = "A  PC1 loadings across cities"
+  )
+
+# Order variables by mean absolute PC2 loading
+var_order_pc2 <- pca_loadings %>%
+  group_by(variable) %>%
+  summarise(mean_loading = mean(abs(PC2), na.rm = TRUE)) %>%
+  arrange(mean_loading) %>%
+  pull(variable)
+
+p_pc2 <- ggplot(
+  pca_loadings %>% mutate(variable = factor(variable, levels = var_order_pc2)),
+  aes(x = city, y = variable, fill = PC2)
+) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(PC2, 2)), size = 6) +
+  scale_fill_gradient(
+    low = "white",
+    high = "#855a6e",
+    na.value = "grey90",
+    name = "PC2 loading",
+    guide = guide_colorbar(
+    barwidth = 18,   # ⬅ increase this
+    barheight = 0.8 # optional: keeps it slim
+    )
+  ) +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    title = "B  PC2 loadings across cities"
+  )
+
+
+pca_plot <- p_pc1 / p_pc2
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/pca_plot.png", pca_plot, width = 22, height =20, dpi = 300)
+
+run_rf_nis <- function(x, nis) {
+
+  x <- x %>% filter(cluster %in% c("High-High", "Low-Low"))
+  if (nrow(x) < 20) return(NULL)
+
+  # ---- predictors for this city ----
+  vlabels <- get_var_labels(nis)
+  predictors <- names(vlabels)
+
+  # keep only needed columns
+  x_rf <- x %>%
+    select(cluster, all_of(predictors)) %>%
+    st_drop_geometry() %>%
+    na.omit()
+
+  if (nrow(x_rf) < 20) return(NULL)
+
+  # ---- dynamic RF formula ----
+  rf_formula <- as.formula(
+    paste("as.factor(cluster) ~", paste(predictors, collapse = " + "))
+  )
+
+  rf <- randomForest(
+    rf_formula,
+    data = x_rf,
+    importance = TRUE,
+    ntree = 500
+  )
+
+  # ---- importance table ----
+  rf_labels_use <- get_rf_labels(nis)
+
+  imp_df <- importance(rf) %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("variable") %>%
+    select(variable, MeanDecreaseAccuracy) %>%
+    mutate(variable = rf_labels_use[variable]) %>%
+    arrange(MeanDecreaseAccuracy)
+
+  city_name <- niscode_names[as.character(nis)]
+  if (is.na(city_name)) city_name <- paste("NIS", nis)
+
+  # ---- lollipop plot ----
+  p <- ggplot(
+    imp_df,
+    aes(x = MeanDecreaseAccuracy,
+        y = reorder(variable, MeanDecreaseAccuracy))
+  ) +
+    geom_segment(
+      aes(x = 0, xend = MeanDecreaseAccuracy,
+          y = variable, yend = variable),
+      color = "grey70",
+      linewidth = 0.8
+    ) +
+    geom_point(size = 3, color = "steelblue") +
+    labs(
+      x = "Mean Decrease Gini",
+      y = "",
+      title = paste("Random Forest Variable Importance –", city_name)
+    ) +
+    theme_minimal(base_size = 26)
+
+  ggsave(
+    paste0(
+      "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/rf/RF_importance_",
+      city_name, ".png"
+    ),
+    p,
+    width = 15, height = 10, dpi = 300
+  )
+
+  imp_df %>% mutate(NISCODE = nis)
+}
+
+
+rf_tables <- imap_dfr(hotspot_results, run_rf_nis)
+write.csv(rf_tables, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/tables/RF_importance_tables.csv", row.names = FALSE)
+
+# Prepare long format with city names
+rf_long <- rf_tables %>%
+  mutate(city = niscode_names[as.character(NISCODE)]) %>%
+  select(city, variable, MeanDecreaseAccuracy)
+
+# Optional: order variables by overall importance
+variable_order <- rf_long %>%
+  group_by(variable) %>%
+  summarise(mean_imp = mean(MeanDecreaseAccuracy, na.rm = TRUE)) %>%
+  arrange(mean_imp) %>%
+  pull(variable)
+
+rf_long$variable <- factor(rf_long$variable, levels = variable_order)
+
+city_order <- c(
+  setdiff(unique(rf_long$city), "Manchester"),
+  "Manchester"
+)
+
+rf_long$city <- factor(rf_long$city, levels = city_order)
+
+# Heatmap
+p1 <- ggplot(rf_long, aes(x = city, y = variable, fill = MeanDecreaseAccuracy)) +
+  geom_tile(color = "white") +  # tile borders
+  geom_text(aes(label = round(MeanDecreaseAccuracy, 1)), size = 6) +  # numbers inside tiles
+  scale_fill_gradient(low = "white", high = "#855a6e", na.value = "grey90") +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    fill = "Importance",
+    title = "Random Forest Variable Importance Across Cities (Mean Decrease in Accuracy)"
+  )
+
+p1
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/RF_importance_value2.png", p1, width = 22, height = 15, dpi = 300)
+
+
+rf_long_rank <- rf_long %>%
+  group_by(city) %>%
+  mutate(rank = rank(-MeanDecreaseAccuracy, ties.method = "min")) %>%  # highest importance = rank 1
+  ungroup()
+
+rf_long_rank <- rf_long_rank %>%
+  filter(city != "Manchester")
+
+p2 <- ggplot(rf_long_rank, aes(x = city, y = variable, fill = rank)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = rank), size = 6, color = "black") +
+  scale_fill_gradient(
+    low = "#855a6e",
+    high = "#f0f0f0",
+    na.value = "grey90",
+    guide = guide_colorbar(
+      reverse = TRUE,
+      barwidth = 20,
+      barheight = 0.8
+    )
+  ) +
+  theme_minimal(base_size = 26) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  labs(
+    x = "",
+    y = "Variable",
+    fill = "Rank (1 = most important)",
+    title = "Random Forest Variable Importance Across Cities (Rank Heatmap)"
+  )
+
+p2
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/RF_importance_rank2.png", p2, width = 20, height = 15, dpi = 300)
+
+cluster_table <- imap_dfr(
+  hotspot_results,
+  ~ .x %>%
+    st_drop_geometry() %>%
+    count(cluster) %>%
+    mutate(
+      percent = n / sum(n) * 100,
+      NISCODE = .y
+    )
+)
+
+write.csv(cluster_table, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/tables/LISA_cluster_summary.csv", row.names = FALSE)
+
+```
+
+
+#Summary stats
+```{r}
+summary_stats_FL <- all_gardens_15 %>%
+  group_by(city) %>%
+  summarise(
+    mean_UGEI_50 = mean(UGEI_50, na.rm=TRUE),
+    sd_UGEI_50 = sd(UGEI_50, na.rm=TRUE),
+    mean_BAFtot_50  = mean(BAFtot_50, na.rm = TRUE),
+    sd_BAFtot_50    = sd(BAFtot_50, na.rm = TRUE),
+    mean_BAFper_50  = mean(BAFper_50, na.rm = TRUE),
+    sd_BAFper_50    = sd(BAFper_50, na.rm = TRUE),
+    mean_risk50   = mean(risk50_2, na.rm = TRUE),
+    sd_risk50     = sd(risk50_2, na.rm = TRUE)
+  )
+
+summary_stats_FL_2 <- all_gardens_15 %>%
+  summarise(
+    mean_UGEI_50 = mean(UGEI_50, na.rm=TRUE),
+    sd_UGEI_50 = sd(UGEI_50, na.rm=TRUE),
+    mean_BAFtot_50  = mean(BAFtot_50, na.rm = TRUE),
+    sd_BAFtot_50    = sd(BAFtot_50, na.rm = TRUE),
+    mean_BAFper_50  = mean(BAFper_50, na.rm = TRUE),
+    sd_BAFper_50    = sd(BAFper_50, na.rm = TRUE),
+    mean_risk50   = mean(risk50_2, na.rm = TRUE),
+    sd_risk50     = sd(risk50_2, na.rm = TRUE)
+  )
+summary_stats_FL_2$city <- "Flemish cities"
+
+summary_stats_M <- Manchester_gardens %>%
+  group_by(city) %>%
+  summarise(
+    mean_UGEI_50 = mean(UGEI_50, na.rm=TRUE),
+    sd_UGEI_50 = sd(UGEI_50, na.rm=TRUE),
+    mean_BAFtot_50  = mean(BAFtot_50, na.rm = TRUE),
+    sd_BAFtot_50    = sd(BAFtot_50, na.rm = TRUE),
+    mean_BAFper_50  = mean(BAFper_50, na.rm = TRUE),
+    sd_BAFper_50    = sd(BAFper_50, na.rm = TRUE),
+    mean_risk50   = mean(risk50_1, na.rm = TRUE),
+    sd_risk50     = sd(risk50_1, na.rm = TRUE)
+  )
+
+summary_stats_FL <- st_drop_geometry(summary_stats_FL)
+summary_stats_FL_2 <- st_drop_geometry(summary_stats_FL_2)
+summary_stats_M <- st_drop_geometry(summary_stats_M)
+
+summary_stats <- rbind(summary_stats_FL, summary_stats_M)
+summary_stats_2 <- rbind(summary_stats_FL_2, summary_stats_M)
+```

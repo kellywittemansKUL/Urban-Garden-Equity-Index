@@ -1,0 +1,3069 @@
+---
+title: "Summarize_indices"
+author: "Kelly"
+date: "2025-08-25"
+output: html_document
+---
+
+```{r}
+#0# Workspace opruimen
+rm(list=ls())
+```
+
+
+```{r}
+#load packages
+library(sf)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(writexl)
+library(plotly)
+library(scales)
+library(ggnewscale)
+library(patchwork)
+library(sf)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(ggplot2)
+# Function to read shapefiles, compute indicators, summarise per city
+library(tidyverse)
+library(viridis)
+```
+
+#STEP 1: LOAD data
+
+FLANDERS
+```{r}
+#load flanders
+
+# path to folder
+shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_15/Buffers"
+
+# list shapefiles
+shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+
+# function to read shapefile and add city column
+read_with_city <- function(file) {
+  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
+  st_read(file, quiet = TRUE) %>%
+    mutate(city = city)
+}
+
+# read all and bind.
+all_gardens_15 <- map(shp_files, read_with_city) %>%
+  bind_rows()
+```
+
+#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+```{r}
+#filter
+all_gardens_15 <- all_gardens_15 %>% filter(ex50 != 0)
+
+sum(duplicated(all_gardens_15$CAPAKEY))
+```
+
+```{r}
+#calculate index (huidig)
+all_gardens_15$UGEI_50h <- all_gardens_15$BAF1_50-all_gardens_15$risk50
+all_gardens_15$UGEI_100h <- all_gardens_15$BAF1_100-all_gardens_15$risk100
+all_gardens_15$UGEI_200h <- all_gardens_15$BAF1_200-all_gardens_15$risk200
+all_gardens_15$UGEI_400h <- all_gardens_15$BAF1_400-all_gardens_15$risk400
+
+#calculate index (potentieel)
+all_gardens_15$UGEI_50p <- all_gardens_15$BAF2_50-all_gardens_15$risk50
+all_gardens_15$UGEI_100p <- all_gardens_15$BAF2_100-all_gardens_15$risk100
+all_gardens_15$UGEI_200p <- all_gardens_15$BAF2_200-all_gardens_15$risk200
+all_gardens_15$UGEI_400p <- all_gardens_15$BAF2_400-all_gardens_15$risk400
+
+all_gardens_15 <- all_gardens_15[complete.cases(all_gardens_15$exp50), ] 
+```
+
+MANCHESTER
+```{r}
+#load Manchester
+Manchester_gardens <- st_read('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/Manchester/Manchester.CL_Landcover.metrics.shp')
+```
+
+```{r}
+#filter
+Manchester_gardens <- Manchester_gardens %>% filter(ex50 != 0)
+Manchester_gardens$city <- 'Manchester'
+```
+
+```{r}
+#calculate index
+Manchester_gardens$UGEI_50h <- Manchester_gardens$BAF1_50-Manchester_gardens$risk50
+Manchester_gardens$UGEI_100h <- Manchester_gardens$BAF1_100-Manchester_gardens$risk100
+Manchester_gardens$UGEI_200h <- Manchester_gardens$BAF1_200-Manchester_gardens$risk200
+Manchester_gardens$UGEI_400h <- Manchester_gardens$BAF1_400-Manchester_gardens$risk400
+
+Manchester_gardens$UGEI_50p <- Manchester_gardens$BAF2_50-Manchester_gardens$risk50
+Manchester_gardens$UGEI_100p <- Manchester_gardens$BAF2_100-Manchester_gardens$risk100
+Manchester_gardens$UGEI_200p <- Manchester_gardens$BAF2_200-Manchester_gardens$risk200
+Manchester_gardens$UGEI_400p <- Manchester_gardens$BAF2_400-Manchester_gardens$risk400
+```
+
+#STEP 2: SUPPLY and DEMAND figures (descriptive)
+
+```{r}
+# --- Drop geometry and combine datasets ---
+combined_data <- bind_rows(
+  st_drop_geometry(all_gardens_15) %>% mutate(dataset = "Flanders"),
+  st_drop_geometry(Manchester_gardens) %>% mutate(dataset = "Manchester")
+)
+
+# Function to create plot with vertical legend underneath
+prepare_metric_plot_vert_legend <- function(df, metric_col, metric_name, breaks, labels) {
+  
+  df_long <- df %>%
+    select(dataset, all_of(metric_col)) %>%
+    pivot_longer(cols = all_of(metric_col),
+                 names_to = "metric",
+                 values_to = "value") %>%
+    mutate(metric = metric_name)
+  
+  df_long <- df_long %>%
+    mutate(
+      BAF_cat = cut(value,
+                    breaks = breaks,
+                    labels = labels,
+                    include.lowest = TRUE,
+                    dig.lab = 3)
+    )
+  
+  # Calculate percentages
+  cat_perc <- df_long %>%
+    group_by(dataset, metric, BAF_cat) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(dataset, metric) %>%
+    mutate(perc = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  # Palette
+  n_cats <- length(unique(cat_perc$BAF_cat))
+  my_palette <- colorRampPalette(c("#c6d9e4", "#407ca2"))(n_cats)
+  
+  # Plot
+  p <- ggplot(cat_perc, aes(x = dataset, y = perc, fill = BAF_cat)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = ifelse(perc > 2, sprintf("%.1f", perc), "")),
+              position = position_stack(vjust = 0.5),
+              size = 5, color = "black") +
+    scale_fill_manual(values = my_palette, name = "Level",
+                      guide = guide_legend(direction = "horizontal")) +
+    labs(x = NULL, y = "% of gardens", title = metric_name) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1),
+          legend.position = "bottom")
+  
+  return(p)
+}
+
+# Create all four plots
+# Font size settings
+base_size <- 24  # adjust as needed
+
+breaks_labels <- list(
+  BAF1_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("0-0.025", "0.025-0.05", "0.05-0.075", "0.075-0.1", ">0.1")
+  ),
+  BAF2_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("0-0.025", "0.025-0.05", "0.05-0.075", "0.075-0.1", ">0.1")
+  ),
+  BAFtot_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("0-0.025", "0.025-0.05", "0.05-0.075", "0.075-0.1", ">0.1")
+  ),
+  BAFper_50 = list(
+    breaks = c(-Inf, 20, 40, 60, 80, +Inf),
+    labels = c("0-20", "20-40", "40-60", "60-80", "80-100")
+  )
+)
+
+# --- Plot 1 (skip legend) ---
+p1 <- prepare_metric_plot_vert_legend(combined_data, "BAF1_50", "A. Garden Contribution",
+                                      breaks_labels[["BAF1_50"]]$breaks,
+                                      breaks_labels[["BAF1_50"]]$labels) +
+      theme(
+        plot.title = element_text(size = base_size-2, face = "bold"),  # title above each plot
+        axis.title = element_text(size = base_size),
+        axis.text = element_text(size = base_size),
+        axis.text.x = element_text(size = base_size),
+        legend.text = element_text(size = base_size - 4),
+        legend.title = element_text(size = base_size - 2)
+      ) +
+      guides(fill = "none")  # skip legend
+
+# --- Plot 2 (keep horizontal legend) ---
+p2 <- prepare_metric_plot_vert_legend(combined_data, "BAF2_50", "B. Garden Potential",
+                                      breaks_labels[["BAF2_50"]]$breaks,
+                                      breaks_labels[["BAF2_50"]]$labels) +
+      scale_fill_manual(values = colorRampPalette(c("#c6d9e4", "#407ca2"))(5),
+                        name = "Levels",  # <- changed legend title
+                        guide = guide_legend(direction = "horizontal", nrow = 1)) +
+      theme(legend.position = "bottom")+
+      theme(
+        plot.title = element_text(size = base_size-2, face = "bold"),  # title above each plot
+        axis.title = element_text(size = base_size),
+        axis.text = element_text(size = base_size),
+        axis.text.x = element_text(size = base_size),
+        axis.title.y = element_blank(),   # remove y-axis title
+        axis.text.y  = element_blank(),   # remove y-axis text
+        axis.ticks.y = element_blank(),   # remove y-axis ticks
+        legend.text = element_text(size = base_size - 4),
+        legend.title = element_text(size = base_size- 2)
+      ) 
+
+# --- Plot 3 (skip legend) ---
+p3 <- prepare_metric_plot_vert_legend(combined_data, "BAFtot_50", "C. PGI",
+                                      breaks_labels[["BAFtot_50"]]$breaks,
+                                      breaks_labels[["BAFtot_50"]]$labels) +
+      guides(fill = "none")  + # skip legend
+      theme(
+        plot.title = element_text(size = base_size-2, face = "bold"),  # title above each plot
+        axis.title = element_text(size = base_size),
+        axis.text = element_text(size = base_size),
+        axis.text.x = element_text(size = base_size),
+        axis.title.y = element_blank(),   # remove y-axis title
+        axis.text.y  = element_blank(),   # remove y-axis text
+        axis.ticks.y = element_blank(),   # remove y-axis ticks
+        legend.text = element_text(size = base_size - 4),
+        legend.title = element_text(size = base_size- 2)
+      ) 
+
+# --- Plot 4 (keep horizontal legend) ---
+p4 <- prepare_metric_plot_vert_legend(combined_data, "BAFper_50", "D. CEI",
+                                      breaks_labels[["BAFper_50"]]$breaks,
+                                      breaks_labels[["BAFper_50"]]$labels) +
+      scale_fill_manual(values = colorRampPalette(c("#c6d9e4", "#407ca2"))(5),
+                        name = "Levels",  # <- changed legend title
+                        guide = guide_legend(direction = "horizontal", nrow = 2)) +
+      theme(legend.position = "bottom") +
+      theme(
+        plot.title = element_text(size = base_size-2, face = "bold"),  # title above each plot
+        axis.title = element_text(size = base_size),
+        axis.text = element_text(size = base_size),
+        axis.text.x = element_text(size = base_size),
+        axis.title.y = element_blank(),   # remove y-axis title
+        axis.text.y  = element_blank(),   # remove y-axis text
+        axis.ticks.y = element_blank(),   # remove y-axis ticks
+        legend.text = element_text(size = base_size - 4),
+        legend.title = element_text(size = base_size- 2)
+      ) 
+
+# --- Combine horizontally ---
+combined_plot <- (p1 | p2 | p3 | p4)
+combined_plot
+
+# --- Save figure ---
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/BAF_metrics_plot_horizontal_legends.png",
+       plot = combined_plot,
+       width = 16, height = 8, dpi = 300)
+```
+
+```{r}
+# Example mapping: replace these with your actual city names
+niscode_names <- c(
+  "11002" = "Antwerp",
+  "12025" = "Mechelen",
+  "13040" = "Turnhout",
+  "24062" = "Leuven",
+  "31005" = "Bruges",
+  "34022" = "Kortrijk",
+  "35013" = "Ostend",
+  "36015" = "Roeselare",
+  "41002" = "Aalst",
+  "44021" = "Ghent",
+  "46021" = "Sint-Niklaas",
+  "71016" = "Genk",
+  "71022" = "Hasselt"
+)
+
+# --- Step 1: Filter Flanders only ---
+flanders_gardens <- st_drop_geometry(all_gardens_15) %>%
+  filter(NISCODE %in% names(niscode_names)) %>%   # keep only 13 cities
+  mutate(dataset = as.factor(NISCODE))  # use NISCODE as dataset
+
+flanders_gardens <- flanders_gardens %>%
+  mutate(dataset = niscode_names[as.character(NISCODE)])
+
+# --- Step 2: Plotting function ---
+make_blue_palette <- function(n) {
+  colorRampPalette(c("#c6d9e4", "#407ca2"))(n)  # light to dark red
+}
+
+base_size <- 26
+# --- Function to create plots with horizontal legend (same as before, adapted) ---
+prepare_metric_plot_vert_legend <- function(df, metric_col, metric_name, breaks, labels, show_legend = TRUE, show_y = FALSE) {
+  
+  df_long <- df %>%
+    select(dataset, all_of(metric_col)) %>%
+    pivot_longer(cols = all_of(metric_col),
+                 names_to = "metric",
+                 values_to = "value") %>%
+    mutate(metric = metric_name)
+  
+  df_long <- df_long %>%
+    mutate(
+      BAF_cat = cut(value,
+                    breaks = breaks,
+                    labels = labels,
+                    include.lowest = TRUE,
+                    dig.lab = 3)
+    )
+  
+  cat_perc <- df_long %>%
+    group_by(dataset, metric, BAF_cat) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(dataset, metric) %>%
+    mutate(perc = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  n_cats <- length(unique(cat_perc$BAF_cat))
+  my_palette <- make_blue_palette(n_cats)
+  
+  p <- ggplot(cat_perc, aes(x = dataset, y = perc, fill = BAF_cat)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = ifelse(perc > 2, sprintf("%.1f", perc), "")),
+              position = position_stack(vjust = 0.5),
+              size = 5, color = "black") +
+    labs(x = NULL, y = if(show_y) "% of gardens" else NULL, title = metric_name) +
+    scale_fill_manual(values = my_palette,
+                      name = "Levels",
+                      guide = if(show_legend) guide_legend(direction = "horizontal", nrow = 1) else "none") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = base_size-2, face = "bold"),
+      axis.title = element_text(size = base_size),
+      axis.text = element_text(size = base_size),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = base_size),
+      axis.title.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.text.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.ticks.y = if(show_y) element_line() else element_blank(),
+      legend.text = element_text(size = base_size - 4),
+      legend.title = element_text(size = base_size -2 ),
+      legend.position = if(show_legend) "bottom" else "none"
+    )
+  
+  return(p)
+}
+# --- Step 3: Define breaks/labels ---
+breaks_labels <- list(
+  BAF1_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  ),
+  BAF2_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  ),
+  BAFtot_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  ),
+  BAFper_50 = list(
+    breaks = c(-Inf, 20, 40, 60, 80, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  )
+)
+
+# Supply plots
+p1 <- prepare_metric_plot_vert_legend(flanders_gardens, "BAF1_50", "A. Garden Adaptation Contribution",
+                                      breaks_labels[["BAF1_50"]]$breaks,
+                                      breaks_labels[["BAF1_50"]]$labels,
+                                      show_legend = FALSE, show_y = TRUE)
+
+p2 <- prepare_metric_plot_vert_legend(flanders_gardens, "BAF2_50", "B. Garden Adaptation Potential",
+                                      breaks_labels[["BAF2_50"]]$breaks,
+                                      breaks_labels[["BAF2_50"]]$labels,
+                                      show_legend = FALSE, show_y = FALSE)
+
+p3 <- prepare_metric_plot_vert_legend(flanders_gardens, "BAFper_50", "C. Garden Contribution Efficiency",
+                                      breaks_labels[["BAFper_50"]]$breaks,
+                                      breaks_labels[["BAFper_50"]]$labels,
+                                      show_legend = FALSE, show_y = TRUE)
+
+p4 <- prepare_metric_plot_vert_legend(flanders_gardens, "BAFtot_50", "D. Garden Potential Gap",
+                                      breaks_labels[["BAFtot_50"]]$breaks,
+                                      breaks_labels[["BAFtot_50"]]$labels,
+                                      show_legend = TRUE, show_y = FALSE)  # Only this shows legend
+
+first_row <- (p1 | p2)/(p3 | p4) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+```
+
+```{r}
+Manchester_gardens <- Manchester_gardens %>%
+  mutate(dataset = "Manchester") 
+
+# --- Step 2: Plotting function ---
+make_blue_palette <- function(n) {
+  colorRampPalette(c("#c6d9e4", "#407ca2"))(n)  # light to dark red
+}
+
+base_size <- 30
+# --- Function to create plots with horizontal legend (same as before, adapted) ---
+prepare_metric_plot_vert_legend <- function(df, metric_col, metric_name, breaks, labels, show_legend = TRUE, show_y = FALSE) {
+  
+  df_long <- df %>%
+    select(dataset, all_of(metric_col)) %>%
+    pivot_longer(cols = all_of(metric_col),
+                 names_to = "metric",
+                 values_to = "value") %>%
+    mutate(metric = metric_name)
+  
+  df_long <- df_long %>%
+    mutate(
+      BAF_cat = cut(value,
+                    breaks = breaks,
+                    labels = labels,
+                    include.lowest = TRUE,
+                    dig.lab = 3)
+    )
+  
+  cat_perc <- df_long %>%
+    group_by(dataset, metric, BAF_cat) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(dataset, metric) %>%
+    mutate(perc = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  n_cats <- length(unique(cat_perc$BAF_cat))
+  my_palette <- make_blue_palette(n_cats)
+  
+  p <- ggplot(cat_perc, aes(x = dataset, y = perc, fill = BAF_cat)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = ifelse(perc > 2, sprintf("%.1f", perc), "")),
+              position = position_stack(vjust = 0.5),
+              size = 7, color = "black") +
+    labs(x = NULL, y = if(show_y) "% of gardens" else NULL, title = metric_name) +
+    scale_fill_manual(values = my_palette,
+                      name = "Levels",
+                      guide = if(show_legend) guide_legend(direction = "horizontal", nrow = 1) else "none") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = base_size-2, face = "bold"),
+      axis.title = element_text(size = base_size),
+      axis.text = element_text(size = base_size),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = base_size),
+      axis.title.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.text.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.ticks.y = if(show_y) element_line() else element_blank(),
+      legend.text = element_text(size = base_size - 4),
+      legend.title = element_text(size = base_size -2 ),
+      legend.position = if(show_legend) "bottom" else "none"
+    )
+  
+  return(p)
+}
+# --- Step 3: Define breaks/labels ---
+breaks_labels <- list(
+  BAF1_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  ),
+  BAF2_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  ),
+  BAFtot_50 = list(
+    breaks = c(-Inf, 0.025, 0.05, 0.075, 0.1, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  ),
+  BAFper_50 = list(
+    breaks = c(-Inf, 20, 40, 60, 80, +Inf),
+    labels = c("Very low", "Low", "Moderate", "High", "Very High")
+  )
+)
+
+# Supply plots
+p1 <- prepare_metric_plot_vert_legend(Manchester_gardens, "BAF1_50", "A. Garden Adaptation Contribution",
+                                      breaks_labels[["BAF1_50"]]$breaks,
+                                      breaks_labels[["BAF1_50"]]$labels,
+                                      show_legend = FALSE, show_y = TRUE)
+
+p2 <- prepare_metric_plot_vert_legend(Manchester_gardens, "BAF2_50", "B. Garden Adaptation Potential",
+                                      breaks_labels[["BAF2_50"]]$breaks,
+                                      breaks_labels[["BAF2_50"]]$labels,
+                                      show_legend = FALSE, show_y = FALSE)
+
+p3 <- prepare_metric_plot_vert_legend(Manchester_gardens, "BAFper_50", "C. Garden Contribution Efficiency",
+                                      breaks_labels[["BAFper_50"]]$breaks,
+                                      breaks_labels[["BAFper_50"]]$labels,
+                                      show_legend = FALSE, show_y = TRUE)
+
+p4 <- prepare_metric_plot_vert_legend(Manchester_gardens, "BAFtot_50", "D. Garden Potential Gap",
+                                      breaks_labels[["BAFtot_50"]]$breaks,
+                                      breaks_labels[["BAFtot_50"]]$labels,
+                                      show_legend = TRUE, show_y = FALSE)  # Only this shows legend
+
+first_row <- (p1 | p2)/(p3 | p4) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+```
+
+
+
+
+
+```{r}
+# --- Custom red palette function ---
+make_red_palette <- function(n) {
+  colorRampPalette(c("#f7d9d9", "#c85a5a"))(n)  # light to dark red
+}
+
+# --- Function to create plots with horizontal legend (same as before, adapted) ---
+prepare_metric_plot_red <- function(df, metric_col, metric_name, breaks, labels, show_legend = TRUE, show_y = FALSE) {
+  
+  df_long <- df %>%
+    select(dataset, all_of(metric_col)) %>%
+    pivot_longer(cols = all_of(metric_col),
+                 names_to = "metric",
+                 values_to = "value") %>%
+    mutate(metric = metric_name)
+  
+  df_long <- df_long %>%
+    mutate(
+      BAF_cat = cut(value,
+                    breaks = breaks,
+                    labels = labels,
+                    include.lowest = TRUE,
+                    dig.lab = 3)
+    )
+  
+  cat_perc <- df_long %>%
+    group_by(dataset, metric, BAF_cat) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(dataset, metric) %>%
+    mutate(perc = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  n_cats <- length(unique(cat_perc$BAF_cat))
+  my_palette <- make_red_palette(n_cats)
+  
+  p <- ggplot(cat_perc, aes(x = dataset, y = perc, fill = BAF_cat)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = ifelse(perc > 2, sprintf("%.1f", perc), "")),
+              position = position_stack(vjust = 0.5),
+              size = 5, color = "black") +
+    labs(x = NULL, y = if(show_y) "% of gardens" else NULL, title = metric_name) +
+    scale_fill_manual(values = my_palette,
+                      name = "Levels",
+                      guide = if(show_legend) guide_legend(direction = "horizontal", nrow = 1) else "none") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = base_size-2, face = "bold"),
+      axis.title = element_text(size = base_size),
+      axis.text = element_text(size = base_size),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = base_size),
+      axis.title.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.text.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.ticks.y = if(show_y) element_line() else element_blank(),
+      legend.text = element_text(size = base_size - 4),
+      legend.title = element_text(size = base_size -2 ),
+      legend.position = if(show_legend) "bottom" else "none"
+    )
+  
+  return(p)
+}
+
+library(patchwork)
+
+new_breaks_labels <- list(
+  vul50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1")
+  ),
+  exp50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1")
+  ),
+  LSTrisk50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1")
+  ),
+  TWIrisk50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1")
+  )
+)
+
+# Only first plot shows y-axis
+r1 <- prepare_metric_plot_red(combined_data, "LSTrisk50", "E. Heat risk",
+                              new_breaks_labels[["LSTrisk50"]]$breaks,
+                              new_breaks_labels[["LSTrisk50"]]$labels,
+                              show_legend = FALSE, show_y = TRUE)
+
+r2 <- prepare_metric_plot_red(combined_data, "TWIrisk50", "F. Flood Risk",
+                              new_breaks_labels[["TWIrisk50"]]$breaks,
+                              new_breaks_labels[["TWIrisk50"]]$labels,
+                              show_legend = FALSE, show_y = FALSE)
+
+r3 <- prepare_metric_plot_red(combined_data, "vul50", "G. Social Vulnerability",
+                              new_breaks_labels[["vul50"]]$breaks,
+                              new_breaks_labels[["vul50"]]$labels,
+                              show_legend = FALSE, show_y = FALSE)
+
+r4 <- prepare_metric_plot_red(combined_data, "exp50", "H. Exposure",
+                              new_breaks_labels[["exp50"]]$breaks,
+                              new_breaks_labels[["exp50"]]$labels,
+                              show_legend = TRUE, show_y = FALSE)
+
+# Combine horizontally with one common legend
+second_row <- r1 | r2 | r3 | r4
+second_row <- second_row +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+
+# Combine with first row
+combined_plot <- (p1 | p2 | p3 | p4) / second_row + plot_layout(heights = c(1, 1))
+
+combined_plot
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/SupplyDemand.png",
+       plot = combined_plot, width = 20, height = 12, dpi = 300)
+
+sum(is.na(all_gardens_15$exp50))
+
+```
+
+```{r}
+# Mapping of NISCODE to city names
+niscode_names <- c(
+  "11002" = "Antwerp",
+  "12025" = "Mechelen",
+  "13040" = "Turnhout",
+  "24062" = "Leuven",
+  "31005" = "Bruges",
+  "34022" = "Kortrijk",
+  "35013" = "Ostend",
+  "36015" = "Roeselare",
+  "41002" = "Aalst",
+  "44021" = "Ghent",
+  "46021" = "Sint-Niklaas",
+  "71016" = "Genk",
+  "71022" = "Hasselt"
+)
+
+# Filter and map
+flanders_gardens <- st_drop_geometry(all_gardens_15) %>%
+  filter(NISCODE %in% names(niscode_names)) %>%        # keep only known cities
+  mutate(dataset = niscode_names[as.character(NISCODE)])  # replace NISCODE with city names
+
+# --- Custom red palette function ---
+make_red_palette <- function(n) {
+  colorRampPalette(c("#f7d9d9", "#c85a5a"))(n)  # light to dark red
+}
+
+base_size <- 26
+# --- Function to create plots with horizontal legend (same as before, adapted) ---
+prepare_metric_plot_red <- function(df, metric_col, metric_name, breaks, labels, show_legend = TRUE, show_y = FALSE) {
+  
+  df_long <- df %>%
+    select(dataset, all_of(metric_col)) %>%
+    pivot_longer(cols = all_of(metric_col),
+                 names_to = "metric",
+                 values_to = "value") %>%
+    mutate(metric = metric_name)
+  
+  df_long <- df_long %>%
+    mutate(
+      BAF_cat = cut(value,
+                    breaks = breaks,
+                    labels = labels,
+                    include.lowest = TRUE,
+                    dig.lab = 3)
+    )
+  
+  cat_perc <- df_long %>%
+    group_by(dataset, metric, BAF_cat) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(dataset, metric) %>%
+    mutate(perc = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  n_cats <- length(unique(cat_perc$BAF_cat))
+  my_palette <- make_red_palette(n_cats)
+  
+  p <- ggplot(cat_perc, aes(x = dataset, y = perc, fill = BAF_cat)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = ifelse(perc > 2, sprintf("%.1f", perc), "")),
+              position = position_stack(vjust = 0.5),
+              size = 5, color = "black") +
+    labs(x = NULL, y = if(show_y) "% of gardens" else NULL, title = metric_name) +
+    scale_fill_manual(values = my_palette,
+                      name = "Levels",
+                      guide = if(show_legend) guide_legend(direction = "horizontal", nrow = 1) else "none") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = base_size-2, face = "bold"),
+      axis.title = element_text(size = base_size),
+      axis.text = element_text(size = base_size),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = base_size),
+      axis.title.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.text.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.ticks.y = if(show_y) element_line() else element_blank(),
+      legend.text = element_text(size = base_size - 4),
+      legend.title = element_text(size = base_size -2 ),
+      legend.position = if(show_legend) "bottom" else "none"
+    )
+  
+  return(p)
+}
+
+library(patchwork)
+
+new_breaks_labels <- list(
+  vul50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  ),
+  exp50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  ),
+  LSTrisk50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  ),
+  TWIrisk50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  )
+)
+
+# Demand plots
+r1 <- prepare_metric_plot_red(flanders_gardens, "LSTrisk50", "E. Heat Risk",
+                              new_breaks_labels[["LSTrisk50"]]$breaks,
+                              new_breaks_labels[["LSTrisk50"]]$labels,
+                              show_legend = FALSE, show_y = TRUE)
+
+r2 <- prepare_metric_plot_red(flanders_gardens, "TWIrisk50", "F. Flood Risk",
+                              new_breaks_labels[["TWIrisk50"]]$breaks,
+                              new_breaks_labels[["TWIrisk50"]]$labels,
+                              show_legend = FALSE, show_y = FALSE)
+
+r3 <- prepare_metric_plot_red(flanders_gardens, "vul50", "G. Social Vulnerability",
+                              new_breaks_labels[["vul50"]]$breaks,
+                              new_breaks_labels[["vul50"]]$labels,
+                              show_legend = FALSE, show_y = TRUE)
+
+r4 <- prepare_metric_plot_red(flanders_gardens, "exp50", "H. Exposure",
+                              new_breaks_labels[["exp50"]]$breaks,
+                              new_breaks_labels[["exp50"]]$labels,
+                              show_legend = TRUE, show_y = FALSE)  # Only this shows legend
+
+second_row <- (r1 | r2)/(r3 | r4) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+
+library(patchwork)
+
+# --- Supply row (2x2) ---
+library(patchwork)
+
+supply_block <- ((p1 | p2) / (p3 | p4)) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    theme = theme(
+      legend.position = "bottom"
+    )
+  )
+
+# --- Demand row (2x2) ---
+demand_block <- ((r1 | r2) / (r3 | r4)) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    theme = theme(
+      legend.position = "bottom"
+    )
+  )
+
+
+# --- Combine rows vertically ---
+combined_plot <- wrap_plots(supply_block, demand_block, ncol = 1, nrow = 2)
+
+# --- Save ---
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/SupplyDemand_Flanders.png",
+       plot = combined_plot,
+       width = 22, height = 28, dpi = 300)
+
+```
+
+```{r}
+
+Manchester_gardens <- Manchester_gardens %>%
+  mutate(dataset = "Manchester") 
+
+# --- Custom red palette function ---
+make_red_palette <- function(n) {
+  colorRampPalette(c("#f7d9d9", "#c85a5a"))(n)  # light to dark red
+}
+
+base_size <- 30
+# --- Function to create plots with horizontal legend (same as before, adapted) ---
+prepare_metric_plot_red <- function(df, metric_col, metric_name, breaks, labels, show_legend = TRUE, show_y = FALSE) {
+  
+  df_long <- df %>%
+    select(dataset, all_of(metric_col)) %>%
+    pivot_longer(cols = all_of(metric_col),
+                 names_to = "metric",
+                 values_to = "value") %>%
+    mutate(metric = metric_name)
+  
+  df_long <- df_long %>%
+    mutate(
+      BAF_cat = cut(value,
+                    breaks = breaks,
+                    labels = labels,
+                    include.lowest = TRUE,
+                    dig.lab = 3)
+    )
+  
+  cat_perc <- df_long %>%
+    group_by(dataset, metric, BAF_cat) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(dataset, metric) %>%
+    mutate(perc = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  n_cats <- length(unique(cat_perc$BAF_cat))
+  my_palette <- make_red_palette(n_cats)
+  
+  p <- ggplot(cat_perc, aes(x = dataset, y = perc, fill = BAF_cat)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = ifelse(perc > 2, sprintf("%.1f", perc), "")),
+              position = position_stack(vjust = 0.5),
+              size = 7, color = "black") +
+    labs(x = NULL, y = if(show_y) "% of gardens" else NULL, title = metric_name) +
+    scale_fill_manual(values = my_palette,
+                      name = "Levels",
+                      guide = if(show_legend) guide_legend(direction = "horizontal", nrow = 1) else "none") +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = base_size-2, face = "bold"),
+      axis.title = element_text(size = base_size),
+      axis.text = element_text(size = base_size),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = base_size),
+      axis.title.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.text.y = if(show_y) element_text(size = base_size) else element_blank(),
+      axis.ticks.y = if(show_y) element_line() else element_blank(),
+      legend.text = element_text(size = base_size - 4),
+      legend.title = element_text(size = base_size -2 ),
+      legend.position = if(show_legend) "bottom" else "none"
+    )
+  
+  return(p)
+}
+
+library(patchwork)
+
+new_breaks_labels <- list(
+  vul50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  ),
+  exp50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  ),
+  LSTrisk50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  ),
+  TWIrisk50 = list(
+    breaks = c(-Inf, 0.2, 0.4, 0.6, 0.8, +Inf),
+    labels = c("Very Low", "Low", "Moderate", "High", "Very High")
+  )
+)
+
+# Demand plots
+r1 <- prepare_metric_plot_red(Manchester_gardens, "LSTrisk50", "E. Heat Risk",
+                              new_breaks_labels[["LSTrisk50"]]$breaks,
+                              new_breaks_labels[["LSTrisk50"]]$labels,
+                              show_legend = FALSE, show_y = TRUE)
+
+r2 <- prepare_metric_plot_red(Manchester_gardens, "TWIrisk50", "F. Flood Risk",
+                              new_breaks_labels[["TWIrisk50"]]$breaks,
+                              new_breaks_labels[["TWIrisk50"]]$labels,
+                              show_legend = FALSE, show_y = FALSE)
+
+r3 <- prepare_metric_plot_red(Manchester_gardens, "vul50", "G. Social Vulnerability",
+                              new_breaks_labels[["vul50"]]$breaks,
+                              new_breaks_labels[["vul50"]]$labels,
+                              show_legend = FALSE, show_y = TRUE)
+
+r4 <- prepare_metric_plot_red(Manchester_gardens, "exp50", "H. Exposure",
+                              new_breaks_labels[["exp50"]]$breaks,
+                              new_breaks_labels[["exp50"]]$labels,
+                              show_legend = TRUE, show_y = FALSE)  # Only this shows legend
+
+second_row <- (r1 | r2)/(r3 | r4) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "bottom"))
+
+library(patchwork)
+
+supply_block <- ((p1 | p2) / (p3 | p4)) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    theme = theme(
+      legend.position = "bottom"
+    )
+  )
+
+# --- Demand row (2x2) ---
+demand_block <- ((r1 | r2) / (r3 | r4)) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    theme = theme(
+      legend.position = "bottom"
+    )
+  )
+
+
+# --- Combine rows vertically ---
+combined_plot <- wrap_plots(supply_block, demand_block, ncol = 1, nrow = 2)
+
+# --- Save ---
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/SupplyDemand_Manchester.png",
+       plot = combined_plot,
+       width = 22, height = 28, dpi = 300)
+
+```
+
+
+#STEP 3: Tabel of % HG, % water, ...
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# Drop geometry and clean Flanders city names
+flanders_df <- st_drop_geometry(all_gardens_15) %>%
+  mutate(
+    region = "Flanders",
+    city = str_replace(city, "ADPgrdns$", "")
+  )
+
+manchester_df <- st_drop_geometry(Manchester_gardens) %>%
+  mutate(region = "Manchester")
+
+# Combine attribute tables
+combined_data <- bind_rows(flanders_df, manchester_df)
+
+# Calculate % of each cover type per garden
+combined_data <- combined_data %>%
+  mutate(
+    perc_HG = HG50 / ex50 * 100,
+    perc_LG = LG50 / ex50 * 100,
+    perc_W  = W50  / ex50 * 100,
+    perc_BS = BS50 / ex50 * 100,
+    perc_A = A50/ex50 *100
+  )
+
+# Make 'region' a factor to control the order
+combined_data <- combined_data %>%
+  mutate(region = factor(region, levels = c("Flanders", "Manchester")))
+
+# Summarise mean and SD per city
+summary_stats <- combined_data %>%
+  group_by(city, region) %>%
+  summarise(
+    `Garden Area Mean` = mean(ex50),
+    `Garden Area SD`   = sd(ex50),
+    `% High Green Mean` = mean(perc_HG),
+    `% High Green SD`   = sd(perc_HG),
+    `% Low Green Mean`  = mean(perc_LG),
+    `% Low Green SD`    = sd(perc_LG),
+    `% Water Mean`      = mean(perc_W),
+    `% Water SD`        = sd(perc_W),
+    `% Bare Soil Mean`  = mean(perc_BS),
+    `% Bare Soil SD`    = sd(perc_BS),
+    `% Sealed Surface Mean`  = mean(perc_A),
+    `% Sealed Surface SD`    = sd(perc_A),
+    .groups = "drop"
+  ) %>%
+  arrange(region, city)  # ensures Flanders first, Manchester last
+
+# View results
+summary_stats
+
+library(writexl)
+
+# Save summary_stats to Excel
+write_xlsx(summary_stats, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Tabellen/summary_stats.xlsx")
+
+```
+
+#Heatmap of contingency table
+
+```{r}
+# Load necessary library
+library(ggplot2)
+library(dplyr)
+
+# Supply classification
+classify_supply <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.025, 0.05, 0.075, Inf),  # custom breaks for supply
+    include.lowest = TRUE,
+    labels = c("0-0.025", "0.025-0.05", "0.075-0.1", ">0.1")
+  )
+}
+
+# Demand classification
+classify_demand <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.25, 0.5, 0.75, 1),  # custom breaks for demand
+    include.lowest = TRUE,
+    labels = c("0-0.25", "0.25-0.5", "0.5-0.75", "0.75-1")
+  )
+}
+
+# Apply to datasets
+all_gardens_15 <- all_gardens_15 %>%
+  mutate(
+    supply_class = classify_supply(BAF1_50),
+    demand_class = classify_demand(risk50)
+  )
+
+Manchester_gardens <- Manchester_gardens %>%
+  mutate(
+    supply_class = classify_supply(BAF1_50),
+    demand_class = classify_demand(risk50)
+  )
+
+
+# Function to plot heatmap with numbers
+plot_heatmap <- function(data, title="Heatmap") {
+  data_summary <- data %>%
+    count(supply_class, demand_class)
+  
+  ggplot(data_summary, aes(x = supply_class, y = demand_class, fill = n)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = n), color = "black", size = 5) +  # Add numbers
+    scale_fill_gradient(low = "white", high = "#8b5fbf") +
+    labs(
+      x = "Supply (Garden Contribution)",
+      y = "Demand (CVI)",
+      fill = "Count",
+      title = title
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Plot for each dataset
+plot_heatmap(all_gardens_15, "Flemish cities")
+plot_heatmap(Manchester_gardens, "Manchester")
+
+```
+
+```{r}
+# Load necessary library
+library(ggplot2)
+library(dplyr)
+
+# Supply classification
+classify_supply <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.025, 0.05, 0.075, 1, Inf),  # custom breaks for supply
+    include.lowest = TRUE,
+    labels = c("0-0.025", "0.025-0.05","0.5-0.75","0.075-0.1", ">0.1")
+  )
+}
+
+# Demand classification
+classify_demand <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1),  # custom breaks for demand
+    include.lowest = TRUE,
+    labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1")
+  )
+}
+
+# Apply to datasets
+all_gardens_15 <- all_gardens_15 %>%
+  mutate(
+    supply_class = classify_supply(BAF1_50),
+    demand_class = classify_demand(risk50)
+  )
+
+Manchester_gardens <- Manchester_gardens %>%
+  mutate(
+    supply_class = classify_supply(BAF1_50),
+    demand_class = classify_demand(risk50)
+  )
+
+
+# Function to plot heatmap with numbers
+plot_heatmap <- function(data, title="Heatmap") {
+  data_summary <- data %>%
+    count(supply_class, demand_class)
+  
+  ggplot(data_summary, aes(x = supply_class, y = demand_class, fill = n)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = n), color = "black", size = 5) +  # Add numbers
+    scale_fill_gradient(low = "white", high = "#8b5fbf") +
+    labs(
+      x = "Supply (Garden Contribution)",
+      y = "Demand (CVI)",
+      fill = "Count",
+      title = title
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Plot for each dataset
+plot_heatmap(all_gardens_15, "Flemish cities")
+plot_heatmap(Manchester_gardens, "Manchester")
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# Supply classification
+classify_supply <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.025, 0.05, 0.075, 0.1, Inf),  # custom breaks for supply
+    include.lowest = TRUE,
+    labels = c("Very Low", "Low","Moderate","High", "Very High")
+  )
+}
+
+# Demand classification
+classify_demand <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1),  # custom breaks for demand
+    include.lowest = TRUE,
+    labels = c("Very Low", "Low","Moderate","High", "Very High")
+  )
+}
+
+
+# Function to compute percentages
+compute_percent <- function(data, supply_col, demand_col) {
+  data %>%
+    mutate(
+      supply_class = classify_supply(.data[[supply_col]]),
+      demand_class = classify_demand(.data[[demand_col]])
+    ) %>%
+    count(supply_class, demand_class) %>%
+    mutate(percent = n / sum(n) * 100)
+}
+
+# Compute data summaries
+df1 <- compute_percent(all_gardens_15, "BAF1_50", "risk50")
+df2 <- compute_percent(Manchester_gardens, "BAF1_50", "risk50")
+df3 <- compute_percent(all_gardens_15, "BAF2_50", "risk50")
+df4 <- compute_percent(Manchester_gardens, "BAF2_50", "risk50")
+
+# Find max percent for consistent color scale
+max_percent <- max(c(df1$percent, df2$percent, df3$percent, df4$percent))
+
+# Function to plot heatmap with fixed fill scale
+plot_heatmap_fixed <- function(df, supply_label, title) {
+  ggplot(df, aes(x = supply_class, y = demand_class, fill = percent)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = sprintf("%.1f%%", percent)), color = "black", size = 4) +
+    scale_fill_gradient(low = "white", high = "#855a6e", limits = c(0, max_percent)) +
+    labs(
+      x = supply_label,
+      y = "Demand (CVI)",
+      fill = "Percent",
+      title = title
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Create the four heatmaps
+heat1 <- plot_heatmap_fixed(df1, "Supply (Garden Adaptation Contribution)", "A. Flanders Current")
+heat2 <- plot_heatmap_fixed(df2, "Supply (Garden Adaptation Contribution)", "B. Manchester Current")
+heat3 <- plot_heatmap_fixed(df3, "Supply (Garden Adaptation Potential)", "C. Flanders Potential")
+heat4 <- plot_heatmap_fixed(df4, "Supply (Garden Adaptation Potential)", "D. Manchester Potential")
+
+# Combine into 2x2 figure with a single shared legend
+# Apply theme to each plot manually
+plots <- list(heat1, heat2, heat3, heat4) |>
+  lapply(\(p) p + theme(legend.position = "right"))
+
+combined_heatmaps <- (
+  (plots[[1]] | plots[[2]]) /
+  (plots[[3]] | plots[[4]])
+) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "right"))
+
+# Display
+combined_heatmaps
+
+# Create the two heatmaps
+heat1 <- plot_heatmap_fixed(df1, "Supply (Garden Adaptation Contribution)", "A. Flanders Current")
+heat3 <- plot_heatmap_fixed(df3, "Supply (Garden Adaptation Potential)", "B. Flanders Potential")
+
+# Combine into 2x2 figure with a single shared legend
+# Apply theme to each plot manually
+plots <- list(heat1, heat3) |>
+  lapply(\(p) p + theme(legend.position = "right"))
+
+combined_heatmaps <- (
+  (plots[[1]] | plots[[2]]) 
+) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "right"))
+
+# Display
+combined_heatmaps
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# Supply classification
+classify_supply <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.025, 0.05, 0.075, 0.1, Inf),  # custom breaks for supply
+    include.lowest = TRUE,
+    labels = c("Very Low", "Low","Moderate","High", "Very High")
+  )
+}
+
+# Demand classification
+classify_demand <- function(x) {
+  cut(
+    x,
+    breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1),  # custom breaks for demand
+    include.lowest = TRUE,
+    labels = c("Very Low", "Low","Moderate","High", "Very High")
+  )
+}
+
+
+# Function to compute percentages
+compute_percent <- function(data, supply_col, demand_col) {
+  data %>%
+    mutate(
+      supply_class = classify_supply(.data[[supply_col]]),
+      demand_class = classify_demand(.data[[demand_col]])
+    ) %>%
+    count(supply_class, demand_class) %>%
+    mutate(percent = n / sum(n) * 100)
+}
+
+# Compute data summaries
+df1 <- compute_percent(all_gardens_15, "BAF1_50", "risk50")
+df2 <- compute_percent(Manchester_gardens, "BAF1_50", "risk50")
+df3 <- compute_percent(all_gardens_15, "BAF2_50", "risk50")
+df4 <- compute_percent(Manchester_gardens, "BAF2_50", "risk50")
+
+# Find max percent for consistent color scale
+max_percent <- max(c(df1$percent, df2$percent, df3$percent, df4$percent))
+
+# Function to plot heatmap with fixed fill scale
+plot_heatmap_fixed <- function(df, supply_label, title) {
+  ggplot(df, aes(x = supply_class, y = demand_class, fill = percent)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = sprintf("%.1f%%", percent)), color = "black", size = 4) +
+    scale_fill_gradient(low = "white", high = "#855a6e", limits = c(0, max_percent)) +
+    labs(
+      x = supply_label,
+      y = "Demand (CVI)",
+      fill = "Percent",
+      title = title
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Create the four heatmaps
+heat1 <- plot_heatmap_fixed(df1, "Supply (Garden Adaptation Contribution)", "A. Flanders Current")
+heat2 <- plot_heatmap_fixed(df2, "Supply (Garden Adaptation Contribution)", "B. Manchester Current")
+heat3 <- plot_heatmap_fixed(df3, "Supply (Garden Adaptation Potential)", "C. Flanders Potential")
+heat4 <- plot_heatmap_fixed(df4, "Supply (Garden Adaptation Potential)", "D. Manchester Potential")
+
+# Combine into 2x2 figure with a single shared legend
+# Apply theme to each plot manually
+plots <- list(heat1, heat2, heat3, heat4) |>
+  lapply(\(p) p + theme(legend.position = "right"))
+
+combined_heatmaps <- (
+  (plots[[1]] | plots[[2]]) /
+  (plots[[3]] | plots[[4]])
+) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "right"))
+
+# Display
+combined_heatmaps
+
+# Create the two heatmaps
+heat2 <- plot_heatmap_fixed(df2, "Supply (Garden Adaptation Contribution)", "A. Manchester Current")
+heat4 <- plot_heatmap_fixed(df4, "Supply (Garden Adaptation Potential)", "B. Manchester Potential")
+
+# Combine into 2x2 figure with a single shared legend
+# Apply theme to each plot manually
+plots <- list(heat2, heat4) |>
+  lapply(\(p) p + theme(legend.position = "right"))
+
+combined_heatmaps <- (
+  (plots[[1]] | plots[[2]]) 
+) +
+  plot_layout(guides = "collect") +
+  plot_annotation(theme = theme(legend.position = "right"))
+
+# Display
+combined_heatmaps
+```
+
+
+#Spearman rank correlation
+
+```{r}
+#1
+gardens_F_analysis <-all_gardens_15[,c("BAF1_50","BAF2_50","BAFper_50","BAFtot_50","TWIrisk50","LSTrisk50","vul50","exp50")]
+
+# Rename columns
+gardens_F_analysis <- st_drop_geometry(gardens_F_analysis)
+colnames(gardens_F_analysis) <- c(
+  "Garden Adaptation Contribution",
+  "Garden Adaptation Potential",
+  "Garden Contribution Efficiency",
+  "Garden Potential Gap",
+  "Flood risk",
+  "Heat risk",
+  "Social vulnerability",
+  "Exposure"
+)
+# Convert all columns to numeric
+gardens_F_analysis[] <- lapply(gardens_F_analysis, function(x) as.numeric(as.character(x)))
+
+# Calculate Spearman correlation coefficients
+cor_matrix <- cor(gardens_F_analysis, method = "spearman", use="complete.obs")
+
+# Open PNG device
+png("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Visualisations/corrplot_matrix.png", width = 1000, height = 800, res = 150)
+
+
+cor <- corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,       # size of axis labels
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black", 
+  number.cex = 0.6    # size of numbers inside cells
+)
+
+cor
+
+# Close device
+dev.off()
+```
+
+```{r}
+library(dplyr)
+library(corrplot)
+library(sf)
+
+# Assuming your dataset has a column 'NISCODE'
+gardens_F_analysis <- all_gardens_15[, c(
+  "NISCODE",
+  "BAF1_50","BAF2_50","BAFper_50","BAFtot_50",
+  "TWIrisk50","LSTrisk50","vul50","exp50"
+)]
+
+# Remove geometry
+gardens_F_analysis <- st_drop_geometry(gardens_F_analysis)
+
+# Rename columns
+colnames(gardens_F_analysis)[2:9] <- c(
+  "Garden Adaptation Contribution",
+  "Garden Adaptation Potential",
+  "Garden Contribution Efficiency",
+  "Garden Potential Gap",
+  "Flood risk",
+  "Heat risk",
+  "Social vulnerability",
+  "Exposure"
+)
+
+# Convert all to numeric
+gardens_F_analysis[2:9] <- lapply(gardens_F_analysis[2:9], function(x) as.numeric(as.character(x)))
+
+# Create output folder
+output_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Visualisations/corrplots_per_NISCODE/"
+dir.create(output_dir, showWarnings = FALSE)
+
+# Loop over each NISCODE
+unique_codes <- unique(gardens_F_analysis$NISCODE)
+
+for (code in unique_codes) {
+  subset_data <- gardens_F_analysis %>% filter(NISCODE == code) %>% select(-NISCODE)
+  
+  # Only proceed if there are at least 2 rows (corrplot needs >1 row)
+  if (nrow(subset_data) > 1) {
+    
+    cor_matrix <- cor(subset_data, method = "spearman", use = "complete.obs")
+    
+    # Define file name
+    file_name <- paste0(output_dir, "corrplot_NISCODE_", code, ".png")
+    
+    # Open PNG device
+    png(file_name, width = 1000, height = 800, res = 150)
+    
+    # Plot correlation matrix
+    corrplot(
+      cor_matrix,
+      method = "color",
+      type = "upper",
+      tl.cex = 0.8,
+      tl.col = "black",
+      tl.srt = 45,
+      addCoef.col = "black",
+      number.cex = 0.6
+    )
+    
+    dev.off()
+    
+    message("Saved correlation plot for NISCODE: ", code)
+  } else {
+    message("Skipping NISCODE ", code, " (not enough data)")
+  }
+}
+
+```
+
+
+```{r}
+#1
+gardens_F_analysis <-Manchester_gardens[,c("BAF1_50","BAF2_50","BAFtot_50","BAFper_50","TWIrisk50","LSTrisk50","vul50", "exp50")]
+
+# Rename columns
+gardens_F_analysis <- st_drop_geometry(gardens_F_analysis)
+colnames(gardens_F_analysis) <- c(
+  "Garden Adaptation Contribution",
+  "Garden Adaptation Potential",
+  "Garden Contribution Efficiency",
+  "Garden Potential Gap",
+  "Flood risk",
+  "Heat risk",
+  "Social vulnerability",
+  "Exposure"
+)
+# Convert all columns to numeric
+gardens_F_analysis[] <- lapply(gardens_F_analysis, function(x) as.numeric(as.character(x)))
+
+# Calculate Spearman correlation coefficients
+cor_matrix <- cor(gardens_F_analysis, method = "spearman", use="complete.obs")
+
+# Open PNG device
+png("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Visualisations/corrplot_matrix_M.png", width = 1000, height = 800, res = 150)
+
+cor <- corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,       # size of axis labels
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black", 
+  number.cex = 0.6    # size of numbers inside cells
+)
+
+cor
+
+# Close device
+dev.off()
+```
+
+```{r}
+library(corrplot)
+
+# Prepare data for Flanders
+gardens_F_analysis <- all_gardens_15[,c("BAF1_50","BAF2_50","BAFtot_50","BAFper_50","TWIrisk50","LSTrisk50","vul50","exp50")]
+gardens_F_analysis <- st_drop_geometry(gardens_F_analysis)
+colnames(gardens_F_analysis) <- c(
+  "Garden Contribution",
+  "Garden Potential",
+  "PGI",
+  "CEI",
+  "Flood risk",
+  "Heat risk",
+  "Social vulnerability",
+  "Exposure"
+)
+gardens_F_analysis[] <- lapply(gardens_F_analysis, function(x) as.numeric(as.character(x)))
+cor_matrix_FL <- cor(gardens_F_analysis, method = "spearman", use="complete.obs")
+
+# Prepare data for Manchester
+gardens_M_analysis <- Manchester_gardens[,c("BAF1_50","BAF2_50","BAFtot_50","BAFper_50","TWIrisk50","LSTrisk50","vul50", "exp50")]
+gardens_M_analysis <- st_drop_geometry(gardens_M_analysis)
+colnames(gardens_M_analysis) <- c(
+  "Garden Contribution",
+  "Garden Potential",
+  "PGI",
+  "CEI",
+  "Flood risk",
+  "Heat risk",
+  "Social vulnerability",
+  "Exposure"
+)
+gardens_M_analysis[] <- lapply(gardens_M_analysis, function(x) as.numeric(as.character(x)))
+cor_matrix_M <- cor(gardens_M_analysis, method = "spearman", use="complete.obs")
+
+# Determine common color scale limits
+min_corr <- min(c(cor_matrix_FL, cor_matrix_M))
+max_corr <- max(c(cor_matrix_FL, cor_matrix_M))
+
+# Plot side by side with shared color scale
+par(mfrow=c(2,1), mar=c(2,2,2,2))  # 1 row, 2 columns
+
+corrplot(
+  cor_matrix_FL,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black", 
+  number.cex = 0.6,
+  cl.lim = c(min_corr, max_corr),
+  title = "A. Flanders"
+)
+
+corrplot(
+  cor_matrix_M,
+  method = "color",
+  type = "upper",
+  tl.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  addCoef.col = "black", 
+  number.cex = 0.6,
+  cl.lim = c(min_corr, max_corr),
+  title = "B. Manchester"
+)
+
+```
+
+```{r}
+summary_stats_FL <- all_gardens_15 %>%
+  group_by(city) %>%
+  summarise(
+    mean_UGEI_50 = mean(UGEI_50h, na.rm=TRUE),
+    sd_UGEI_50 = sd(UGEI_50h, na.rm=TRUE),
+    mean_BAF1_50  = mean(BAF1_50, na.rm = TRUE),
+    sd_BAF1_50    = sd(BAF1_50, na.rm = TRUE),
+    mean_BAF2_50  = mean(BAF2_50, na.rm = TRUE),
+    sd_BAF2_50    = sd(BAF2_50, na.rm = TRUE),
+    mean_risk50   = mean(risk50, na.rm = TRUE),
+    sd_risk50     = sd(risk50, na.rm = TRUE)
+  )
+
+summary_stats_FL_2 <- all_gardens_15 %>%
+  summarise(
+    mean_UGEI_50 = mean(UGEI_50h, na.rm=TRUE),
+    sd_UGEI_50 = sd(UGEI_50h, na.rm=TRUE),
+    mean_BAF1_50  = mean(BAF1_50, na.rm = TRUE),
+    sd_BAF1_50    = sd(BAF1_50, na.rm = TRUE),
+    mean_BAF2_50  = mean(BAF2_50, na.rm = TRUE),
+    sd_BAF2_50    = sd(BAF2_50, na.rm = TRUE),
+    mean_risk50   = mean(risk50, na.rm = TRUE),
+    sd_risk50     = sd(risk50, na.rm = TRUE)
+  )
+summary_stats_FL_2$city <- "Flemish cities"
+
+summary_stats_M <- Manchester_gardens %>%
+  group_by(city) %>%
+  summarise(
+    mean_UGEI_50 = mean(UGEI_50h, na.rm=TRUE),
+    sd_UGEI_50 = sd(UGEI_50h, na.rm=TRUE),
+    mean_BAF1_50  = mean(BAF1_50, na.rm = TRUE),
+    sd_BAF1_50    = sd(BAF1_50, na.rm = TRUE),
+    mean_BAF2_50  = mean(BAF2_50, na.rm = TRUE),
+    sd_BAF2_50    = sd(BAF2_50, na.rm = TRUE),
+    mean_risk50   = mean(risk50, na.rm = TRUE),
+    sd_risk50     = sd(risk50, na.rm = TRUE)
+  )
+
+summary_stats_FL <- st_drop_geometry(summary_stats_FL)
+summary_stats_FL_2 <- st_drop_geometry(summary_stats_FL_2)
+summary_stats_M <- st_drop_geometry(summary_stats_M)
+
+summary_stats <- rbind(summary_stats_FL, summary_stats_M)
+summary_stats_2 <- rbind(summary_stats_FL_2, summary_stats_M)
+```
+
+
+```{r}
+# drop geometry if it's still an sf object
+summary_table <- st_drop_geometry(summary_stats)
+
+# write to Excel
+write_xlsx(summary_table, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/summary_stats.xlsx")
+```
+
+```{r}
+# drop geometry before pivoting
+summary_long <- summary_stats %>%
+  st_drop_geometry() %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("stat", "variable"),
+    names_pattern = "(mean|sd)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value)
+
+
+# Create a named vector mapping old city codes/names to nicer labels
+city_labels <- c(
+  AalstADPgrdns = "Aalst",
+  AntwerpenADPgrdns = "Antwerpen",
+  BruggeADPgrdns = "Brugge",
+  GenkADPgrdns ="Genk",
+  GentADPgrdns ="Gent",
+  HasseltADPgrdns ="Hasselt",
+  KortrijkADPgrdns ="Kortrijk",
+  LeuvenADPgrdns ="Leuven",
+  MechelenADPgrdns="Mechelen",
+  OostendeADPgrdns ="Oostende",
+  RoeselareADPgrdns ="Roeselare",
+  Sint = "Sint-Niklaas",
+  TurnhoutADPgrdns ="Turnhout",
+  Manchester ="Manchester"
+  # add all your cities here
+)
+
+# Define nicer variable labels
+variable_labels <- c(
+  "BAFper_50" = "Supply: Contribution efficiency index",
+  "BAFtot_50" = "Supply: Realization Gap Index",
+  "risk50"  = "Demand",
+  "UGEI_50"      = "Equity Index"
+)
+
+ggplot(summary_long, aes(x = city, y = mean, fill = variable)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  geom_errorbar(
+    aes(ymin = mean - sd, ymax = mean + sd),
+    position = position_dodge(width = 0.9),
+    width = 0.2
+  ) +
+  facet_wrap(~ variable, scales = "free_y",
+             labeller = as_labeller(variable_labels)) +
+  labs(y = "Mean ± SD", x = "City", title = "Garden Metrics per City") +
+  scale_fill_manual(
+    values = c(
+      "BAFper_50" = "#407ca2",
+      "BAFtot_50" = "#6aa6c8",
+      "risk50"  = "#bc3e45",
+      "UGEI_50"      = "#855a6e"
+    )
+  ) +
+  scale_x_discrete(labels = city_labels) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"   # << hides legend
+  )
+```
+```{r}
+# Prepare long data
+summary_long2 <- summary_stats %>%
+  st_drop_geometry() %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("stat", "variable"),
+    names_pattern = "(mean|sd)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(
+    # Flip demand negative
+    mean = ifelse(variable == "risk50", -mean, mean)
+  )
+
+# Add spacer rows
+var_levels <- summary_long2 %>% distinct(variable)
+spacers <- var_levels %>% mutate(city = "Spacer", mean = NA_real_, sd = NA_real_)
+summary_long2 <- bind_rows(summary_long2, spacers)
+
+# Combine Supply & Demand into one group
+summary_combined <- summary_long2 %>%
+  filter(variable %in% c("BAF1_50", "risk50", "UGEI_50")) %>%
+  mutate(variable_group = ifelse(variable %in% c("BAF1_50", "risk50"),
+                                 "SupplyDemand", variable))
+
+# City ordering
+city_levels <- c(
+  "AalstADPgrdns","AntwerpenADPgrdns","BruggeADPgrdns","GenkADPgrdns","GentADPgrdns",
+  "HasseltADPgrdns","KortrijkADPgrdns","LeuvenADPgrdns","MechelenADPgrdns","OostendeADPgrdns",
+  "RoeselareADPgrdns","Sint","TurnhoutADPgrdns",
+  "Spacer",
+  "Manchester"
+)
+
+# City labels
+city_labels <- c(
+  AalstADPgrdns = "Aalst",
+  AntwerpenADPgrdns = "Antwerpen",
+  BruggeADPgrdns = "Brugge",
+  GenkADPgrdns ="Genk",
+  GentADPgrdns ="Gent",
+  HasseltADPgrdns ="Hasselt",
+  KortrijkADPgrdns ="Kortrijk",
+  LeuvenADPgrdns ="Leuven",
+  MechelenADPgrdns="Mechelen",
+  OostendeADPgrdns ="Oostende",
+  RoeselareADPgrdns ="Roeselare",
+  Sint = "Sint-Niklaas",
+  TurnhoutADPgrdns ="Turnhout",
+  Spacer = " ",
+  Manchester ="Manchester"
+)
+
+# --- Calculate symmetric y-axis for SupplyDemand ---
+max_abs <- summary_combined %>%
+  filter(variable %in% c("BAF1_50","risk50")) %>%
+  summarise(max_val = max(abs(mean + sd), na.rm = TRUE)) %>%
+  pull(max_val)
+
+# Add a small padding for error bars
+padding <- 0.7
+max_abs_padded <- max_abs * (1 + padding)
+
+a <- ggplot(summary_combined, aes(x = factor(city, levels = city_levels), y = mean, fill = variable)) +
+  geom_col(position = "identity") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.2) +
+  geom_hline(yintercept = 0, color = "black") +
+  facet_wrap(~ variable_group, scales = "free_y",
+             labeller = as_labeller(c(
+               "SupplyDemand" = "Supply (+) vs Demand (–)",
+               "UGEI_50"      = "Equity Index"
+             ))) +
+  scale_fill_manual(values = c(
+    "BAF1_50" = "#407ca2",  # Supply
+    "risk50"    = "#bc3e45",  # Demand
+    "UGEI_50"   = "#855a6e"   # Equity
+  )) +
+  scale_x_discrete(labels = city_labels, drop = FALSE) +
+  coord_cartesian(ylim = c(-max_abs_padded, max_abs_padded)) +
+  labs(y = "Mean ± SD", x = "City", title = "A. Current Supply vs Demand and Equity Index") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+
+
+
+```{r}
+# Prepare long data
+summary_long2 <- summary_stats %>%
+  st_drop_geometry() %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("stat", "variable"),
+    names_pattern = "(mean|sd)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  mutate(
+    # Flip demand negative
+    mean = ifelse(variable == "risk50", -mean, mean)
+  )
+
+# Add spacer rows
+var_levels <- summary_long2 %>% distinct(variable)
+spacers <- var_levels %>% mutate(city = "Spacer", mean = NA_real_, sd = NA_real_)
+summary_long2 <- bind_rows(summary_long2, spacers)
+
+# Combine Supply & Demand into one group
+summary_combined <- summary_long2 %>%
+  filter(variable %in% c("BAF2_50", "risk50", "UGEI_50")) %>%
+  mutate(variable_group = ifelse(variable %in% c("BAF2_50", "risk50"),
+                                 "SupplyDemand", variable))
+
+# City ordering
+city_levels <- c(
+  "AalstADPgrdns","AntwerpenADPgrdns","BruggeADPgrdns","GenkADPgrdns","GentADPgrdns",
+  "HasseltADPgrdns","KortrijkADPgrdns","LeuvenADPgrdns","MechelenADPgrdns","OostendeADPgrdns",
+  "RoeselareADPgrdns","Sint","TurnhoutADPgrdns",
+  "Spacer",
+  "Manchester"
+)
+
+# City labels
+city_labels <- c(
+  AalstADPgrdns = "Aalst",
+  AntwerpenADPgrdns = "Antwerpen",
+  BruggeADPgrdns = "Brugge",
+  GenkADPgrdns ="Genk",
+  GentADPgrdns ="Gent",
+  HasseltADPgrdns ="Hasselt",
+  KortrijkADPgrdns ="Kortrijk",
+  LeuvenADPgrdns ="Leuven",
+  MechelenADPgrdns="Mechelen",
+  OostendeADPgrdns ="Oostende",
+  RoeselareADPgrdns ="Roeselare",
+  Sint = "Sint-Niklaas",
+  TurnhoutADPgrdns ="Turnhout",
+  Spacer = " ",
+  Manchester ="Manchester"
+)
+
+# --- Calculate symmetric y-axis for SupplyDemand ---
+max_abs <- summary_combined %>%
+  filter(variable %in% c("BAF2_50","risk50")) %>%
+  summarise(max_val = max(abs(mean + sd), na.rm = TRUE)) %>%
+  pull(max_val)
+
+# Add a small padding for error bars
+padding <- 0.7
+max_abs_padded <- max_abs * (1 + padding)
+
+b <- ggplot(summary_combined, aes(x = factor(city, levels = city_levels), y = mean, fill = variable)) +
+  geom_col(position = "identity") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.2) +
+  geom_hline(yintercept = 0, color = "black") +
+  facet_wrap(~ variable_group, scales = "free_y",
+             labeller = as_labeller(c(
+               "SupplyDemand" = "Supply (+) vs Demand (–)",
+               "UGEI_50"      = "Equity Index"
+             ))) +
+  scale_fill_manual(values = c(
+    "BAF2_50" = "#407ca2",  # Supply
+    "risk50"    = "#bc3e45",  # Demand
+    "UGEI_50"   = "#855a6e"   # Equity
+  )) +
+  scale_x_discrete(labels = city_labels, drop = FALSE) +
+  coord_cartesian(ylim = c(-max_abs_padded, max_abs_padded)) +
+  labs(y = "Mean ± SD", x = "City", title = "B. Potential Supply vs Demand and Equity Index") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+
+```{r}
+library(patchwork)
+
+# Add titles directly when arranging
+combined_plot <- a + b + plot_layout(ncol = 1)
+
+combined_plot
+
+ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/combined_stackplot.png", combined_plot, width = 7, height = 10, dpi = 300)
+```
+
+```{r}
+# Prepare long data
+summary_long2 <- summary_stats %>%
+  st_drop_geometry() %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("stat", "variable"),
+    names_pattern = "(mean|sd)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value) %>%
+  # Keep only Contribution efficiency index
+  filter(variable == "BAFper_50")
+
+# Add spacer row for Manchester
+spacer <- summary_long2 %>%
+  distinct(variable) %>%
+  mutate(city = "Spacer", mean = NA_real_, sd = NA_real_)
+
+summary_long2 <- bind_rows(summary_long2, spacer)
+
+# Define city order
+city_levels <- c(
+  "AalstADPgrdns","AntwerpenADPgrdns","BruggeADPgrdns","GenkADPgrdns","GentADPgrdns",
+  "HasseltADPgrdns","KortrijkADPgrdns","LeuvenADPgrdns","MechelenADPgrdns","OostendeADPgrdns",
+  "RoeselareADPgrdns","Sint","TurnhoutADPgrdns",
+  "Spacer",
+  "Manchester"
+)
+
+# City labels
+city_labels <- c(
+  AalstADPgrdns = "Aalst",
+  AntwerpenADPgrdns = "Antwerpen",
+  BruggeADPgrdns = "Brugge",
+  GenkADPgrdns ="Genk",
+  GentADPgrdns ="Gent",
+  HasseltADPgrdns ="Hasselt",
+  KortrijkADPgrdns ="Kortrijk",
+  LeuvenADPgrdns ="Leuven",
+  MechelenADPgrdns="Mechelen",
+  OostendeADPgrdns ="Oostende",
+  RoeselareADPgrdns ="Roeselare",
+  Sint = "Sint-Niklaas",
+  TurnhoutADPgrdns ="Turnhout",
+  Spacer = " ",       # empty label for gap
+  Manchester ="Manchester"
+)
+
+# Symmetric y-axis (optional for this single variable)
+max_val <- max(summary_long2$mean + summary_long2$sd, na.rm = TRUE)
+max_val_padded <- max_val * 1.05
+
+# Plot
+ggplot(summary_long2, aes(x = factor(city, levels = city_levels), y = mean)) +
+  geom_col(fill = "#407ca2") +
+  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd), width = 0.2) +
+  scale_x_discrete(labels = city_labels, drop = FALSE) +
+  coord_cartesian(ylim = c(0, max_val_padded)) +
+  labs(y = "Contribution efficiency index ± SD", x = "City",
+       title = "Supply: Contribution Efficiency Index per City") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+```{r}
+
+# ---- Prep data ----
+summary_long <- summary_stats %>%
+  st_drop_geometry() %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("stat", "variable"),
+    names_pattern = "(mean|sd)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value)
+
+# Variable labels
+summary_long <- summary_long %>%
+  mutate(variable_label = recode(
+    variable,
+    "BAFtot_50" = "Supply",
+    "risk50"    = "Demand",
+    "UGEI_50"   = "Equity Index"
+  )) %>%
+  mutate(variable_label = factor(variable_label,
+                                 levels = c("Supply", "Demand", "Equity Index")))
+
+# ---- Ordering + labels ----
+city_levels <- c(
+  "AalstADPgrdns",
+  "AntwerpenADPgrdns",
+  "BruggeADPgrdns",
+  "GenkADPgrdns",
+  "GentADPgrdns",
+  "HasseltADPgrdns",
+  "KortrijkADPgrdns",
+  "LeuvenADPgrdns",
+  "MechelenADPgrdns",
+  "OostendeADPgrdns",
+  "RoeselareADPgrdns",
+  "Sint",
+  "TurnhoutADPgrdns",   # last Flemish city
+  "Spacer",             # white gap
+  "Manchester"          # separated at the end
+)
+
+city_labels <- c(
+  AalstADPgrdns    = "Aalst",
+  AntwerpenADPgrdns= "Antwerpen",
+  BruggeADPgrdns   = "Brugge",
+  GenkADPgrdns     = "Genk",
+  GentADPgrdns     = "Gent",
+  HasseltADPgrdns  = "Hasselt",
+  KortrijkADPgrdns = "Kortrijk",
+  LeuvenADPgrdns   = "Leuven",
+  MechelenADPgrdns = "Mechelen",
+  OostendeADPgrdns = "Oostende",
+  RoeselareADPgrdns= "Roeselare",
+  Sint             = "Sint-Niklaas",
+  TurnhoutADPgrdns = "Turnhout",
+  Spacer           = " ",          # single space -> keeps slot visible
+  Manchester       = "Manchester"
+)
+
+# ---- Ensure Spacer rows exist for each variable ----
+var_levels <- summary_long %>% distinct(variable, variable_label)
+spacers <- var_levels %>% mutate(city = "Spacer", mean = NA_real_, sd = NA_real_)
+summary_long <- bind_rows(summary_long, spacers)
+
+# Make sure Spacer tiles render white
+summary_long <- summary_long %>%
+  mutate(mean = ifelse(city == "Spacer", NA_real_, mean))
+
+# ---- Combined heatmap (3 rows, shared x) ----
+ggplot() +
+  # Supply
+  geom_tile(
+    data = summary_long %>% filter(variable == "BAFtot_50"),
+    aes(x = city, y = variable_label, fill = mean),
+    color = "white"
+  ) +
+  scale_fill_gradient(name = "Supply", low = "#e8e8e8", high = "#407ca2", na.value = "white") +
+  new_scale_fill() +
+  # Demand
+  geom_tile(
+    data = summary_long %>% filter(variable == "risk50"),
+    aes(x = city, y = variable_label, fill = mean),
+    color = "white"
+  ) +
+  scale_fill_gradient(name = "Demand", low = "#e8e8e8", high = "#bc3e45", na.value = "white") +
+  new_scale_fill() +
+  # Equity Index
+  geom_tile(
+    data = summary_long %>% filter(variable == "UGEI_50"),
+    aes(x = city, y = variable_label, fill = mean),
+    color = "white"
+  ) +
+  scale_fill_gradient(name = "Equity Index", low = "#bc3e45", high = "#407ca2", na.value = "white") +
+  scale_x_discrete(limits = city_levels, labels = city_labels, drop = FALSE) +
+  labs(x = "City", y = "", title = "Garden Metrics Heatmap") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 10)
+  )
+
+# ---- Patchwork version (stacked) ----
+heatmap_single <- function(var_name, title, low_col, high_col){
+  ggplot(
+    summary_long %>% filter(variable_label == var_name),
+    aes(x = city, y = variable_label, fill = mean)
+  ) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(name = title, low = low_col, high = high_col, na.value = "white") +
+    scale_x_discrete(limits = city_levels, labels = city_labels, drop = FALSE) +
+    labs(x = NULL, y = NULL) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.y = element_blank(),
+      legend.position = "right"
+    )
+}
+
+p1 <- heatmap_single("Supply", "Supply", "#e8e8e8", "#407ca2")
+p2 <- heatmap_single("Demand", "Demand", "#e8e8e8", "#bc3e45")
+p3 <- heatmap_single("Equity Index", "Equity Index", "#bc3e45", "#407ca2")
+
+p1 / p2 / p3
+
+
+
+
+```
+
+```{r}
+#Idea for comparison Manchester with other flemish cities: 
+# drop geometry before pivoting
+summary_long <- summary_stats_2 %>%
+  st_drop_geometry() %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("stat", "variable"),
+    names_pattern = "(mean|sd)_(.*)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(names_from = stat, values_from = value)
+
+
+# Prepare wide data without BAFper_50
+summary_wide <- summary_long %>%
+  filter(variable != "BAFper_50") %>%
+  select(city, variable, mean) %>%
+  pivot_wider(names_from = variable, values_from = mean)
+
+# Manually rescale each indicator
+#summary_scaled <- summary_wide %>%
+#  mutate(
+#    BAFtot_50  = rescale(BAFtot_50, to = c(0,1)),       # Supply
+#    risk50   = rescale(risk50, to = c(0,1)),        # Demand
+#    UGEI_50       = scales::rescale(UGEI_50, to = c(-1,1))    # Equity
+#  )
+
+summary_scaled <- summary_wide
+
+# Prepare theta labels
+theta_labels <- c(
+  "BAFtot_50" = "Supply",
+  "risk50"  = "Demand",
+  "UGEI_50"      = "Equity Index"
+)
+
+# Example: Manchester + first Flemish city
+plot_ly(type = 'scatterpolar', mode = 'lines+markers') %>%
+  add_trace(
+    r = as.numeric(summary_scaled[1, -1]),
+    theta = theta_labels[names(summary_scaled)[-1]],
+    fill = 'toself',
+    name = summary_scaled$city[1]
+  ) %>%
+  add_trace(
+    r = as.numeric(summary_scaled[2, -1]),
+    theta = theta_labels[names(summary_scaled)[-1]],
+    fill = 'toself',
+    name = summary_scaled$city[2]
+  ) %>%
+  layout(
+    polar = list(
+      radialaxis = list(visible = TRUE, range = c(-1, 1))  # Set full scale for all indicators
+    ),
+    showlegend = TRUE
+  )
+
+
+
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
+all_gardens_df <- st_drop_geometry(all_gardens_15)
+
+all_gardens_df <- all_gardens_df %>%
+  rename(
+    risk_50 = risk50,
+    risk_100 = risk100,
+    risk_200 = risk200,
+    risk_400 = risk400
+  )
+
+metric_cols <- c(
+  "BAF1_50","BAF1_100","BAF1_200","BAF1_400",
+  "risk_50","risk_100","risk_200","risk_400",
+  "UGEI_50h", "UGEI_100h", "UGEI_200h", "UGEI_400h"
+)
+
+
+all_long <- all_gardens_df %>%
+  select(city, all_of(metric_cols)) %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("variable", "buffer"),
+    names_pattern = "(.*)_(\\d+)",
+    values_to = "value"
+  ) %>%
+  mutate(buffer = as.numeric(buffer))
+
+summary_all <- all_long %>%
+  group_by(variable, buffer) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    sd_value = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create a named vector for nicer labels
+variable_labels <- c(
+  BAF1 = "Supply index",
+  risk = "Demand index",
+  UGEI = "Equity index"
+)
+
+# Assuming summary_all is ready from your previous code
+
+# Define colors for variables
+variable_colors <- c(
+  "BAF1" = "#407ca2",  # Supply
+  "risk"   = "#bc3e45",  # Demand
+  "UGEI"   = "#855a6e"   # Equity
+)
+
+ggplot(summary_all, aes(x = buffer, y = mean_value, color = variable, fill = variable)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_ribbon(aes(ymin = mean_value - sd_value, ymax = mean_value + sd_value),
+              alpha = 0.2, color = NA) +
+  facet_wrap(~ variable, scales = "free_y",
+             labeller = labeller(variable = variable_labels)) +
+  scale_color_manual(values = variable_colors) +
+  scale_fill_manual(values = variable_colors) +
+  scale_x_continuous(
+    breaks = c(50, 100, 200, 400),
+    labels = c("5,000 m²", "25,000 m²", "100,000 m²", "500,000 m²")
+  ) +
+  labs(
+    x = "Buffer area",
+    y = "Mean metric value ± SD",
+    title = "A. Flanders - Average Garden Metrics"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title = element_text(size = 12, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
+  )
+
+
+```
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
+all_gardens_df <- st_drop_geometry(Manchester_gardens)
+
+all_gardens_df <- all_gardens_df %>%
+  rename(
+    risk_50 = risk50,
+    risk_100 = risk100,
+    risk_200 = risk200,
+    risk_400 = risk400
+  )
+
+metric_cols <- c(
+  "BAF1_50","BAF1_100","BAF1_200","BAF1_400",
+  "risk_50","risk_100","risk_200","risk_400",
+  "UGEI_50h", "UGEI_100h", "UGEI_200h", "UGEI_400h"
+)
+
+
+all_long <- all_gardens_df %>%
+  select(city, all_of(metric_cols)) %>%
+  pivot_longer(
+    cols = -city,
+    names_to = c("variable", "buffer"),
+    names_pattern = "(.*)_(\\d+)",
+    values_to = "value"
+  ) %>%
+  mutate(buffer = as.numeric(buffer))
+
+summary_all <- all_long %>%
+  group_by(variable, buffer) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    sd_value = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Create a named vector for nicer labels
+variable_labels <- c(
+  BAF1 = "Supply index",
+  risk = "Demand index",
+  UGEI = "Equity index"
+)
+
+# Assuming summary_all is ready from your previous code
+
+# Define colors for variables
+variable_colors <- c(
+  "BAF1" = "#407ca2",  # Supply
+  "risk"   = "#bc3e45",  # Demand
+  "UGEI"   = "#855a6e"   # Equity
+)
+
+ggplot(summary_all, aes(x = buffer, y = mean_value, color = variable, fill = variable)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_ribbon(aes(ymin = mean_value - sd_value, ymax = mean_value + sd_value),
+              alpha = 0.2, color = NA) +
+  facet_wrap(~ variable, scales = "free_y",
+             labeller = labeller(variable = variable_labels)) +
+  scale_color_manual(values = variable_colors) +
+  scale_fill_manual(values = variable_colors) +
+  scale_x_continuous(
+    breaks = c(50, 100, 200, 400),
+    labels = c("5,000 m²", "25,000 m²", "100,000 m²", "500,000 m²")
+  ) +
+  labs(
+    x = "Buffer area",
+    y = "Mean metric value ± SD",
+    title = "B. Manchester - Average Garden Metrics"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title = element_text(size = 12, face = "bold"),
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "none",
+    panel.grid.minor = element_blank()
+  )
+
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Define colors and linetypes
+variable_colors <- c(
+  "BAFtot" = "#407ca2",  # Supply
+  "risk"   = "#bc3e45",  # Demand
+  "UGEI"   = "#855a6e"   # Equity
+)
+variable_linetypes <- c(
+  "BAFtot" = "solid",
+  "risk"   = "dashed",
+  "UGEI"   = "dotdash"
+)
+
+ggplot(summary_all, aes(x = buffer, y = mean_value, color = variable, fill = variable, linetype = variable)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_ribbon(aes(ymin = mean_value - sd_value, ymax = mean_value + sd_value),
+              alpha = 0.2, color = NA) +
+  scale_color_manual(values = variable_colors, labels = variable_labels) +
+  scale_fill_manual(values = variable_colors, labels = variable_labels) +
+  scale_linetype_manual(values = variable_linetypes, labels = variable_labels) +
+  scale_x_continuous(
+    breaks = c(50, 100, 200, 400),
+    labels = c("5,000 m²", "25,000 m²", "100,000 m²", "500,000 m²")
+  ) +
+  labs(
+    x = "Buffer area",
+    y = "Mean metric value ± SD",
+    color = "Metric",
+    fill = "Metric",
+    linetype = "Metric",
+    title = "A. Average Garden Metrics - Flanders"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.title = element_text(size = 12, face = "bold"),
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r}
+# List of folders for each year
+years <- c("BBK_12", "BBK_15", "BBK_18", "BBK_21")
+base_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1"
+
+# --- Function to read shapefiles, compute indicators, summarise per city ---
+process_year <- function(year_folder) {
+  shp_dir <- file.path(base_dir, year_folder)
+  shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+  
+  # Read shapefile and add city column
+  read_with_city <- function(file) {
+    city <- str_extract(basename(file), "^[A-Za-z]+")
+    st_read(file, quiet = TRUE) %>%
+      mutate(city = city)
+  }
+  
+  # Combine all shapefiles for the year
+  all_gardens <- map(shp_files, read_with_city) %>% bind_rows()
+  
+  # Filter and compute UGEI for multiple distances
+  all_gardens <- all_gardens %>%
+    filter(ex50 != 0) %>%
+    mutate(
+      UGEI_50  = BAFtot_50  - risk50_2,
+      UGEI_100 = BAFtot_100 - risk100_2,
+      UGEI_200 = BAFtot_200 - risk200_2,
+      UGEI_400 = BAFtot_400 - risk400_2
+    )
+  
+  # Summarise indicators per city
+  summary_stats <- all_gardens %>%
+    group_by(city) %>%
+    summarise(
+      mean_UGEI_50   = mean(UGEI_50, na.rm = TRUE),
+      mean_BAFtot_50 = mean(BAFtot_50, na.rm = TRUE),
+      mean_BAFper_50 = mean(BAFper_50, na.rm = TRUE),
+      mean_risk50_2  = mean(risk50_2, na.rm = TRUE),
+      mean_HG_50     = mean(HG50, na.rm = TRUE),
+      mean_W_50      = mean(W50, na.rm = TRUE),
+      mean_BS_50     = mean(BS50, na.rm = TRUE),
+      mean_LG_50     = mean(LG50, na.rm = TRUE),
+      mean_A_50      = mean(A50, na.rm = TRUE),
+      sum_HG_50     = sum(HG50, na.rm = TRUE),
+      sum_W_50      = sum(W50, na.rm = TRUE),
+      sum_BS_50     = sum(BS50, na.rm = TRUE),
+      sum_LG_50     = sum(LG50, na.rm = TRUE),
+      sum_A_50      = sum(A50, na.rm = TRUE),
+      mean_HGsur_50     = mean(HGsur50, na.rm = TRUE),
+      mean_Wsur_50      = mean(Wsur50, na.rm = TRUE),
+      mean_BSsur_50     = mean(BSsur50, na.rm = TRUE),
+      mean_LGsur_50     = mean(LGsur50, na.rm = TRUE),
+      mean_Asur_50      = mean(Asur50, na.rm = TRUE),
+      sum_HGsur_50     = sum(HGsur50, na.rm = TRUE),
+      sum_Wsur_50      = sum(Wsur50, na.rm = TRUE),
+      sum_BSsur_50     = sum(BSsur50, na.rm = TRUE),
+      sum_LGsur_50     = sum(LGsur50, na.rm = TRUE),
+      sum_Asur_50      = sum(Asur50, na.rm = TRUE)
+    ) %>%
+    mutate(
+      year = as.numeric(str_extract(year_folder, "\\d+"))
+    )
+  
+  return(summary_stats)
+}
+
+# --- Run for all years and combine ---
+all_years <- map_dfr(years, process_year)
+
+
+# Quick check
+head(all_years)
+```
+
+```{r}
+city_labels <- c(
+  AalstADPgrdns = "Aalst",
+  AntwerpenADPgrdns = "Antwerpen",
+  BruggeADPgrdns = "Brugge",
+  GenkADPgrdns ="Genk",
+  GentADPgrdns ="Gent",
+  HasseltADPgrdns ="Hasselt",
+  KortrijkADPgrdns ="Kortrijk",
+  LeuvenADPgrdns ="Leuven",
+  MechelenADPgrdns="Mechelen",
+  OostendeADPgrdns ="Oostende",
+  RoeselareADPgrdns ="Roeselare",
+  Sint = "Sint-Niklaas",
+  TurnhoutADPgrdns ="Turnhout"
+  # add all your cities here
+)
+
+# Plot temporal evolution (example: mean_UGEI per city)
+library(ggplot2)
+library(viridis)   # for nice colors
+
+# Plot
+p <- ggplot(all_years, aes(x = year, y = mean_UGEI_50, color = city, group = city)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_color_viridis_d(labels = city_labels, breaks = names(city_labels)) +
+  scale_x_continuous(breaks = c(2012, 2015, 2018, 2021)) +
+  labs(
+    x = "Year",
+    y = "Mean UGEI (50 m buffer)",
+    color = "City",
+    title = "Temporal Evolution of UGEI (50 m) per City"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11)
+  )
+
+# Show plot
+p
+
+# Optionally save
+#ggsave("UGEI_temporal_evolution.png", plot = p, width = 10, height = 6, dpi = 300)
+
+# --- average across all cities ---
+all_years_avg <- all_years %>%
+  group_by(year) %>%
+  summarise(mean_UGEI_50 = mean(mean_UGEI_50, na.rm = TRUE))
+
+# --- plot ---
+p_avg <- ggplot(all_years_avg, aes(x = year, y = mean_UGEI_50)) +
+  geom_line(color = "darkgreen", size = 1.2) +
+  geom_point(color = "forestgreen", size = 3) +
+  scale_x_continuous(breaks = c(2012, 2015, 2018, 2021)) +
+  labs(
+    x = "Year",
+    y = "Average Mean UGEI (50 m buffer)",
+    title = "Temporal Evolution of Average UGEI (50 m) across Cities"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11)
+  )
+
+# Show
+p_avg
+
+# Optionally save
+#ggsave("UGEI_temporal_evolution_avg.png", plot = p_avg, width = 8, height = 5, dpi = 300)
+
+library(tidyverse)
+library(sf)
+
+# --- average supply & UGEI across all cities ---
+all_years_avg <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    mean_BAFtot_50 = mean(mean_BAFtot_50, na.rm = TRUE),
+    sd_BAFtot_50   = sd(mean_BAFtot_50, na.rm = TRUE),
+    mean_UGEI_50   = mean(mean_UGEI_50, na.rm = TRUE),
+    sd_UGEI_50     = sd(mean_UGEI_50, na.rm = TRUE)
+  )
+
+# --- Plot BAFtot (Supply) ---
+p_BAFtot <- ggplot(all_years_avg, aes(x = year, y = mean_BAFtot_50)) +
+  geom_line(color = "darkblue", size = 1.2) +
+  geom_point(color = "darkblue", size = 3) +
+  geom_errorbar(aes(ymin = mean_BAFtot_50 - sd_BAFtot_50, 
+                    ymax = mean_BAFtot_50 + sd_BAFtot_50),
+                width = 0.25, color = "grey40") +
+  labs(
+    x = "Year",
+    y = "BAFtot (50 m) Average",
+    title = "Temporal Evolution of Garden Supply (BAFtot)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+  )
+
+# --- Plot UGEI ---
+p_UGEI <- ggplot(all_years_avg, aes(x = year, y = mean_UGEI_50)) +
+  geom_line(color = "darkgreen", size = 1.2) +
+  geom_point(color = "darkgreen", size = 3) +
+  geom_errorbar(aes(ymin = mean_UGEI_50 - sd_UGEI_50, 
+                    ymax = mean_UGEI_50 + sd_UGEI_50),
+                width = 0.25, color = "grey40") +
+  labs(
+    x = "Year",
+    y = "UGEI (50 m) Average",
+    title = "Temporal Evolution of UGEI"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5)
+  )
+
+# --- Display plots individually ---
+p_BAFtot
+p_UGEI
+
+library(tidyverse)
+
+# --- Average HG, W, BS, LG, A across all cities ---
+all_years_avg_extra <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    mean_HG_50 = mean(mean_HG_50, na.rm = TRUE),
+    mean_W_50  = mean(mean_W_50,  na.rm = TRUE),
+    mean_BS_50 = mean(mean_BS_50, na.rm = TRUE),
+    mean_LG_50 = mean(mean_LG_50, na.rm = TRUE),
+    mean_A_50  = mean(mean_A_50,  na.rm = TRUE)
+  )
+
+# --- Reshape to long format for plotting ---
+all_years_long <- all_years_avg_extra %>%
+  pivot_longer(cols = starts_with("mean_"),
+               names_to = "indicator",
+               values_to = "value") %>%
+  mutate(indicator = recode(indicator,
+                            mean_HG_50 = "HG",
+                            mean_W_50  = "W",
+                            mean_BS_50 = "BS",
+                            mean_LG_50 = "LG",
+                            mean_A_50  = "A"))
+
+# --- Plot all in one graph ---
+p_indicators <- ggplot(all_years_long, aes(x = year, y = value, color = indicator, group = indicator)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = c(2012, 2015, 2018, 2021)) +
+  labs(
+    x = "Year",
+    y = "Average (50 m buffer)",
+    color = "Indicator",
+    title = "Temporal Evolution of Garden Indicators (HG, W, BS, LG, A)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold")
+  )
+
+# Show plot
+p_indicators
+
+# --- Average HG, W, BS, LG, A across all cities ---
+all_years_avg_extra <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    sum_HG_50 = sum(sum_HG_50, na.rm = TRUE),
+    sum_W_50  = sum(sum_W_50,  na.rm = TRUE),
+    sum_BS_50 = sum(sum_BS_50, na.rm = TRUE),
+    sum_LG_50 = sum(sum_LG_50, na.rm = TRUE),
+    sum_A_50  = sum(sum_A_50,  na.rm = TRUE)
+  )
+
+# --- Reshape to long format for plotting ---
+all_years_long <- all_years_avg_extra %>%
+  pivot_longer(cols = starts_with("sum_"),
+               names_to = "indicator",
+               values_to = "value") %>%
+  mutate(indicator = recode(indicator,
+                            sum_HG_50 = "HG",
+                            sum_W_50  = "W",
+                            sum_BS_50 = "BS",
+                            sum_LG_50 = "LG",
+                            sum_A_50  = "A"))
+
+# --- Plot all in one graph ---
+p_indicators <- ggplot(all_years_long, aes(x = year, y = value, color = indicator, group = indicator)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = c(2012, 2015, 2018, 2021)) +
+  labs(
+    x = "Year",
+    y = "Total",
+    color = "Indicator",
+    title = "Temporal Evolution of Garden Indicators (HG, W, BS, LG, A)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold")
+  )
+
+# Show plot
+p_indicators
+
+```
+
+```{r}
+
+
+# --- Example: Temporal evolution of mean UGEI per city ---
+ggplot(all_years, aes(x = year, y = mean_UGEI_50, color = city, group = city)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_color_viridis_d(labels = city_labels, breaks = names(city_labels)) +
+  scale_x_continuous(breaks = c(2012, 2015, 2018, 2021)) +
+  labs(
+    x = "Year",
+    y = "Mean UGEI (50 m buffer)",
+    color = "City",
+    title = "Temporal Evolution of UGEI per City"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11)
+  )
+
+# --- Temporal evolution of Supply (BAFtot) and UGEI averages across cities ---
+all_years_avg <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    mean_BAFtot_50 = mean(mean_BAFtot_50, na.rm = TRUE),
+    sd_BAFtot_50   = sd(mean_BAFtot_50, na.rm = TRUE),
+    mean_UGEI_50   = mean(mean_UGEI_50, na.rm = TRUE),
+    sd_UGEI_50     = sd(mean_UGEI_50, na.rm = TRUE)
+  )
+
+# Supply (BAFtot)
+p_BAFtot <- ggplot(all_years_avg, aes(x = year, y = mean_BAFtot_50)) +
+  geom_line(color = "#407ca2", size = 1.3) +
+  geom_point(color = "#407ca2", size = 3) +
+  geom_ribbon(aes(ymin = mean_BAFtot_50 - sd_BAFtot_50,
+                  ymax = mean_BAFtot_50 + sd_BAFtot_50),
+              alpha = 0.2, fill = "#407ca2") +
+  scale_x_continuous(breaks = unique(all_years_avg$year)) +
+  labs(x = "Year", y = "Supply (5000 m²) Average",
+       title = "Temporal Evolution of Garden Supply") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5))
+
+# UGEI
+p_UGEI <- ggplot(all_years_avg, aes(x = year, y = mean_UGEI_50)) +
+  geom_line(color = "#8b5fbf", size = 1.3) +
+  geom_point(color = "#8b5fbf", size = 3) +
+  geom_ribbon(aes(ymin = mean_UGEI_50 - sd_UGEI_50,
+                  ymax = mean_UGEI_50 + sd_UGEI_50),
+              alpha = 0.2, fill = "#8b5fbf") +
+  scale_x_continuous(breaks = unique(all_years_avg$year)) +
+  labs(x = "Year", y = "UGEI (5000 m²) Average",
+       title = "Temporal Evolution of Garden Equity Index") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5))
+
+p_BAFtot
+p_UGEI
+
+
+# --- Combined plot for indicators HG, W, BS, LG, A ---
+
+# Reshape and recode
+all_years_long <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    mean_HG_50 = mean(mean_HG_50, na.rm = TRUE),
+    mean_LG_50 = mean(mean_LG_50, na.rm = TRUE),
+    mean_W_50  = mean(mean_W_50, na.rm = TRUE),
+    mean_A_50  = mean(mean_A_50, na.rm = TRUE),
+    mean_BS_50 = mean(mean_BS_50, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("mean_"),
+               names_to = "indicator",
+               values_to = "value") %>%
+  mutate(
+    indicator = recode(indicator,
+                       mean_HG_50 = "High green",
+                       mean_LG_50 = "Low green",
+                       mean_W_50  = "Water",
+                       mean_A_50  = "Sealed surface",
+                       mean_BS_50 = "Bare soil")
+  )
+
+# Define custom colors
+indicator_colors <- c(
+  "High green" = "#607e32",
+  "Low green"  = "#a7bc7a",
+  "Water"      = "#3f70a8",
+  "Sealed surface" = "#8e8e8e",
+  "Bare soil"  = "#9b875b"
+)
+
+# Plot
+p_indicators <- ggplot(all_years_long, aes(x = year, y = value, color = indicator, group = indicator)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = indicator_colors) +
+  scale_x_continuous(breaks = unique(all_years_long$year)) +
+  labs(
+    x = "Year",
+    y = "Average across cities",
+    color = "Indicator",
+    title = "Temporal Evolution of Garden Indicators"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.position = "top"
+  )
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# --- Summed indicators across all cities ---
+all_years_sum <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    sum_HG_50 = sum(sum_HG_50, na.rm = TRUE),
+    sum_LG_50 = sum(sum_LG_50, na.rm = TRUE),
+    sum_W_50  = sum(sum_W_50, na.rm = TRUE),
+    sum_A_50  = sum(sum_A_50, na.rm = TRUE),
+    sum_BS_50 = sum(sum_BS_50, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("sum_"),
+               names_to = "indicator",
+               values_to = "value") %>%
+  mutate(indicator = recode(indicator,
+                            sum_HG_50 = "High green",
+                            sum_LG_50 = "Low green",
+                            sum_W_50  = "Water",
+                            sum_A_50  = "Sealed surface",
+                            sum_BS_50 = "Bare soil"))
+
+# Define colors (same as before)
+indicator_colors <- c(
+  "High green" = "#607e32",
+  "Low green"  = "#a7bc7a",
+  "Water"      = "#3f70a8",
+  "Sealed surface" = "#8e8e8e",
+  "Bare soil"  = "#9b875b"
+)
+
+# --- Plot sum ---
+p_indicators_sum <- ggplot(all_years_sum, aes(x = year, y = value, color = indicator, group = indicator)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = indicator_colors) +
+  scale_x_continuous(breaks = unique(all_years_sum$year)) +
+  labs(
+    x = "Year",
+    y = "Sum across cities",
+    color = "Indicator",
+    title = "Temporal Evolution of Total Garden Indicators"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.position = "top"
+  )
+
+
+
+# Reshape and recode
+all_years_long <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    mean_HGsur_50 = mean(mean_HGsur_50, na.rm = TRUE),
+    mean_LGsur_50 = mean(mean_LGsur_50, na.rm = TRUE),
+    mean_Wsur_50  = mean(mean_Wsur_50, na.rm = TRUE),
+    mean_Asur_50  = mean(mean_Asur_50, na.rm = TRUE),
+    mean_BSsur_50 = mean(mean_BSsur_50, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("mean_"),
+               names_to = "indicator",
+               values_to = "value") %>%
+  mutate(
+    indicator = recode(indicator,
+                       mean_HGsur_50 = "High green",
+                       mean_LGsur_50 = "Low green",
+                       mean_Wsur_50  = "Water",
+                       mean_Asur_50  = "Sealed surface",
+                       mean_BSsur_50 = "Bare soil")
+  )
+
+# Define custom colors
+indicator_colors <- c(
+  "High green" = "#607e32",
+  "Low green"  = "#a7bc7a",
+  "Water"      = "#3f70a8",
+  "Sealed surface" = "#8e8e8e",
+  "Bare soil"  = "#9b875b"
+)
+
+# Plot
+p_indicators_sur <- ggplot(all_years_long, aes(x = year, y = value, color = indicator, group = indicator)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = indicator_colors) +
+  scale_x_continuous(breaks = unique(all_years_long$year)) +
+  labs(
+    x = "Year",
+    y = "Average across cities",
+    color = "Indicator",
+    title = "Temporal Evolution of Garden + Buffer Indicators"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.position = "top"
+  )
+
+
+# --- Summed indicators across all cities ---
+all_years_sum <- all_years %>%
+  st_drop_geometry() %>%
+  group_by(year) %>%
+  summarise(
+    sum_HGsur_50 = sum(sum_HGsur_50, na.rm = TRUE),
+    sum_LGsur_50 = sum(sum_LGsur_50, na.rm = TRUE),
+    sum_Wsur_50  = sum(sum_Wsur_50, na.rm = TRUE),
+    sum_Asur_50  = sum(sum_Asur_50, na.rm = TRUE),
+    sum_BSsur_50 = sum(sum_BSsur_50, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("sum_"),
+               names_to = "indicator",
+               values_to = "value") %>%
+  mutate(indicator = recode(indicator,
+                            sum_HGsur_50 = "High green",
+                            sum_LGsur_50 = "Low green",
+                            sum_Wsur_50  = "Water",
+                            sum_Asur_50  = "Sealed surface",
+                            sum_BSsur_50 = "Bare soil"))
+
+# Define colors (same as before)
+indicator_colors <- c(
+  "High green" = "#607e32",
+  "Low green"  = "#a7bc7a",
+  "Water"      = "#3f70a8",
+  "Sealed surface" = "#8e8e8e",
+  "Bare soil"  = "#9b875b"
+)
+
+# --- Plot sum ---
+p_indicators_sum_sur <- ggplot(all_years_sum, aes(x = year, y = value, color = indicator, group = indicator)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = indicator_colors) +
+  scale_x_continuous(breaks = unique(all_years_sum$year)) +
+  labs(
+    x = "Year",
+    y = "Sum surroundings across cities",
+    color = "Indicator",
+    title = "Temporal Evolution of Total Garden + Buffer Indicators"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.position = "top"
+  )
+
+
+
+
+# Show plots
+p_BAFtot
+p_UGEI
+p_indicators
+p_indicators_sum
+p_indicators_sur
+p_indicators_sum_sur
+
+```
+
+```{r}
+# path to folder
+shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_15"
+
+# list shapefiles
+shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+
+# function to read shapefile and add city column
+read_with_city <- function(file) {
+  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
+  st_read(file, quiet = TRUE) %>%
+    mutate(city = city)
+}
+
+# read all and bind
+all_gardens_15 <- map(shp_files, read_with_city) %>%
+  bind_rows()
+```
+
+#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+```{r}
+all_gardens_15 <- all_gardens_15 %>% filter(ex50 != 0)
+
+sum(duplicated(all_gardens_15$CAPAKEY))
+sum(all_gardens_15$sur50>6000)
+sum(all_gardens_15$sur50<4000)
+
+test <- all_gardens_15 %>% filter(sur50 < 4000 & city == 'LeuvenADPgrdns')
+```
+
+```{r}
+# path to folder
+shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_18"
+
+# list shapefiles
+shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+
+# function to read shapefile and add city column
+read_with_city <- function(file) {
+  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
+  st_read(file, quiet = TRUE) %>%
+    mutate(city = city)
+}
+
+# read all and bind
+all_gardens_18 <- map(shp_files, read_with_city) %>%
+  bind_rows()
+```
+
+#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+```{r}
+all_gardens_18 <- all_gardens_18 %>% filter(ex50 != 0)
+
+sum(duplicated(all_gardens_18$CAPAKEY))
+sum(all_gardens_18$sur50>6000)
+sum(all_gardens_18$sur50<4000)
+```
+
+```{r}
+# path to folder
+shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_12"
+
+# list shapefiles
+shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+
+# function to read shapefile and add city column
+read_with_city <- function(file) {
+  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
+  st_read(file, quiet = TRUE) %>%
+    mutate(city = city)
+}
+
+# read all and bind
+all_gardens_12 <- map(shp_files, read_with_city) %>%
+  bind_rows()
+```
+
+#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+```{r}
+all_gardens_12 <- all_gardens_12 %>% filter(ex50 != 0)
+
+sum(duplicated(all_gardens_12$CAPAKEY))
+sum(all_gardens_12$sur50>6000)
+sum(all_gardens_12$sur50<4000)
+```
+
+
+```{r}
+# path to folder
+shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_21"
+
+# list shapefiles
+shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
+
+# function to read shapefile and add city column
+read_with_city <- function(file) {
+  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
+  st_read(file, quiet = TRUE) %>%
+    mutate(city = city)
+}
+
+# read all and bind
+all_gardens_21 <- map(shp_files, read_with_city) %>%
+  bind_rows()
+```
+
+#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+```{r}
+all_gardens_21 <- all_gardens_21 %>% filter(ex50 != 0)
+
+sum(duplicated(all_gardens_21$CAPAKEY))
+sum(all_gardens_21$sur50>6000)
+sum(all_gardens_21$sur50<4000)
+```
