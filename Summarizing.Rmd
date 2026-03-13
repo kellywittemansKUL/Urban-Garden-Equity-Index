@@ -6,13 +6,13 @@ output: html_document
 ---
 
 ```{r}
-#0# Workspace opruimen
+#0# Clean workspace
 rm(list=ls())
 ```
 
 
 ```{r}
-#load packages
+#1# load packages
 library(sf)
 library(purrr)
 library(dplyr)
@@ -41,7 +41,7 @@ FLANDERS
 #load flanders
 
 # path to folder
-shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_15/Buffers"
+shp_dir <- "./Buffers"
 
 # list shapefiles
 shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
@@ -58,7 +58,7 @@ all_gardens_15 <- map(shp_files, read_with_city) %>%
   bind_rows()
 ```
 
-#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
+#remove outliers
 ```{r}
 #filter
 all_gardens_15 <- all_gardens_15 %>% filter(ex50 != 0)
@@ -67,13 +67,13 @@ sum(duplicated(all_gardens_15$CAPAKEY))
 ```
 
 ```{r}
-#calculate index (huidig)
+#calculate index (current)
 all_gardens_15$UGEI_50h <- all_gardens_15$BAF1_50-all_gardens_15$risk50
 all_gardens_15$UGEI_100h <- all_gardens_15$BAF1_100-all_gardens_15$risk100
 all_gardens_15$UGEI_200h <- all_gardens_15$BAF1_200-all_gardens_15$risk200
 all_gardens_15$UGEI_400h <- all_gardens_15$BAF1_400-all_gardens_15$risk400
 
-#calculate index (potentieel)
+#calculate index (potential)
 all_gardens_15$UGEI_50p <- all_gardens_15$BAF2_50-all_gardens_15$risk50
 all_gardens_15$UGEI_100p <- all_gardens_15$BAF2_100-all_gardens_15$risk100
 all_gardens_15$UGEI_200p <- all_gardens_15$BAF2_200-all_gardens_15$risk200
@@ -85,7 +85,7 @@ all_gardens_15 <- all_gardens_15[complete.cases(all_gardens_15$exp50), ]
 MANCHESTER
 ```{r}
 #load Manchester
-Manchester_gardens <- st_read('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/Manchester/Manchester.CL_Landcover.metrics.shp')
+Manchester_gardens <- st_read('./Manchester.CL_Landcover.metrics.shp')
 ```
 
 ```{r}
@@ -262,7 +262,7 @@ combined_plot <- (p1 | p2 | p3 | p4)
 combined_plot
 
 # --- Save figure ---
-ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/BAF_metrics_plot_horizontal_legends.png",
+ggsave("./Figures/Metrics_plot_horizontal_legends.png",
        plot = combined_plot,
        width = 16, height = 8, dpi = 300)
 ```
@@ -627,7 +627,7 @@ combined_plot <- (p1 | p2 | p3 | p4) / second_row + plot_layout(heights = c(1, 1
 
 combined_plot
 
-ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/SupplyDemand.png",
+ggsave("./Figures/SupplyDemand.png",
        plot = combined_plot, width = 20, height = 12, dpi = 300)
 
 sum(is.na(all_gardens_15$exp50))
@@ -791,7 +791,7 @@ demand_block <- ((r1 | r2) / (r3 | r4)) +
 combined_plot <- wrap_plots(supply_block, demand_block, ncol = 1, nrow = 2)
 
 # --- Save ---
-ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/results/SupplyDemand_Flanders.png",
+ggsave("./Figures/results/SupplyDemand_Flanders.png",
        plot = combined_plot,
        width = 22, height = 28, dpi = 300)
 
@@ -933,7 +933,7 @@ demand_block <- ((r1 | r2) / (r3 | r4)) +
 combined_plot <- wrap_plots(supply_block, demand_block, ncol = 1, nrow = 2)
 
 # --- Save ---
-ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/SupplyDemand_Manchester.png",
+ggsave("./Figures/SupplyDemand_Manchester.png",
        plot = combined_plot,
        width = 22, height = 28, dpi = 300)
 
@@ -1000,7 +1000,7 @@ summary_stats
 library(writexl)
 
 # Save summary_stats to Excel
-write_xlsx(summary_stats, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Tabellen/summary_stats.xlsx")
+write_xlsx(summary_stats, "./Tabels/summary_stats.xlsx")
 
 ```
 
@@ -1365,7 +1365,7 @@ gardens_F_analysis[] <- lapply(gardens_F_analysis, function(x) as.numeric(as.cha
 cor_matrix <- cor(gardens_F_analysis, method = "spearman", use="complete.obs")
 
 # Open PNG device
-png("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Visualisations/corrplot_matrix.png", width = 1000, height = 800, res = 150)
+png("./Visualisations/corrplot_matrix.png", width = 1000, height = 800, res = 150)
 
 
 cor <- corrplot(
@@ -1416,7 +1416,7 @@ colnames(gardens_F_analysis)[2:9] <- c(
 gardens_F_analysis[2:9] <- lapply(gardens_F_analysis[2:9], function(x) as.numeric(as.character(x)))
 
 # Create output folder
-output_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Visualisations/corrplots_per_NISCODE/"
+output_dir <- "./Visualisations/corrplots_per_NISCODE/"
 dir.create(output_dir, showWarnings = FALSE)
 
 # Loop over each NISCODE
@@ -1482,7 +1482,7 @@ gardens_F_analysis[] <- lapply(gardens_F_analysis, function(x) as.numeric(as.cha
 cor_matrix <- cor(gardens_F_analysis, method = "spearman", use="complete.obs")
 
 # Open PNG device
-png("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Visualisations/corrplot_matrix_M.png", width = 1000, height = 800, res = 150)
+png("./Visualisations/corrplot_matrix_M.png", width = 1000, height = 800, res = 150)
 
 cor <- corrplot(
   cor_matrix,
@@ -1625,7 +1625,7 @@ summary_stats_2 <- rbind(summary_stats_FL_2, summary_stats_M)
 summary_table <- st_drop_geometry(summary_stats)
 
 # write to Excel
-write_xlsx(summary_table, "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/summary_stats.xlsx")
+write_xlsx(summary_table, "./Output/summary_stats.xlsx")
 ```
 
 ```{r}
@@ -1881,7 +1881,7 @@ combined_plot <- a + b + plot_layout(ncol = 1)
 
 combined_plot
 
-ggsave("C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Paper/Figures/combined_stackplot.png", combined_plot, width = 7, height = 10, dpi = 300)
+ggsave("./Figures/combined_stackplot.png", combined_plot, width = 7, height = 10, dpi = 300)
 ```
 
 ```{r}
@@ -2368,7 +2368,7 @@ ggplot(summary_all, aes(x = buffer, y = mean_value, color = variable, fill = var
 ```{r}
 # List of folders for each year
 years <- c("BBK_12", "BBK_15", "BBK_18", "BBK_21")
-base_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1"
+base_dir <- "./Output/Garden_metric1"
 
 # --- Function to read shapefiles, compute indicators, summarise per city ---
 process_year <- function(year_folder) {
@@ -2953,117 +2953,4 @@ p_indicators_sum_sur
 
 ```
 
-```{r}
-# path to folder
-shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_15"
 
-# list shapefiles
-shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
-
-# function to read shapefile and add city column
-read_with_city <- function(file) {
-  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
-  st_read(file, quiet = TRUE) %>%
-    mutate(city = city)
-}
-
-# read all and bind
-all_gardens_15 <- map(shp_files, read_with_city) %>%
-  bind_rows()
-```
-
-#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
-```{r}
-all_gardens_15 <- all_gardens_15 %>% filter(ex50 != 0)
-
-sum(duplicated(all_gardens_15$CAPAKEY))
-sum(all_gardens_15$sur50>6000)
-sum(all_gardens_15$sur50<4000)
-
-test <- all_gardens_15 %>% filter(sur50 < 4000 & city == 'LeuvenADPgrdns')
-```
-
-```{r}
-# path to folder
-shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_18"
-
-# list shapefiles
-shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
-
-# function to read shapefile and add city column
-read_with_city <- function(file) {
-  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
-  st_read(file, quiet = TRUE) %>%
-    mutate(city = city)
-}
-
-# read all and bind
-all_gardens_18 <- map(shp_files, read_with_city) %>%
-  bind_rows()
-```
-
-#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
-```{r}
-all_gardens_18 <- all_gardens_18 %>% filter(ex50 != 0)
-
-sum(duplicated(all_gardens_18$CAPAKEY))
-sum(all_gardens_18$sur50>6000)
-sum(all_gardens_18$sur50<4000)
-```
-
-```{r}
-# path to folder
-shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_12"
-
-# list shapefiles
-shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
-
-# function to read shapefile and add city column
-read_with_city <- function(file) {
-  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
-  st_read(file, quiet = TRUE) %>%
-    mutate(city = city)
-}
-
-# read all and bind
-all_gardens_12 <- map(shp_files, read_with_city) %>%
-  bind_rows()
-```
-
-#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
-```{r}
-all_gardens_12 <- all_gardens_12 %>% filter(ex50 != 0)
-
-sum(duplicated(all_gardens_12$CAPAKEY))
-sum(all_gardens_12$sur50>6000)
-sum(all_gardens_12$sur50<4000)
-```
-
-
-```{r}
-# path to folder
-shp_dir <- "C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. Onderzoek/WP3/Output/Garden_metric1/BBK_21"
-
-# list shapefiles
-shp_files <- list.files(shp_dir, pattern = "\\.shp$", full.names = TRUE)
-
-# function to read shapefile and add city column
-read_with_city <- function(file) {
-  city <- str_extract(basename(file), "^[A-Za-z]+")  # take leading word (e.g. Aalst)
-  st_read(file, quiet = TRUE) %>%
-    mutate(city = city)
-}
-
-# read all and bind
-all_gardens_21 <- map(shp_files, read_with_city) %>%
-  bind_rows()
-```
-
-#probleem met tuinen die op de rand van twee rasters vallen? of waarvan 400 m erbuiten niet meer binnen raster valt?
-```{r}
-all_gardens_21 <- all_gardens_21 %>% filter(ex50 != 0)
-
-sum(duplicated(all_gardens_21$CAPAKEY))
-sum(all_gardens_21$sur50>6000)
-sum(all_gardens_21$sur50<4000)
-```
