@@ -8,19 +8,19 @@ output: html_document
 ## Preparation
 
 ```{r}
-#0# Workspace opruimen
+#0# Clean Workspace
 rm(list=ls())
 ```
 
 ```{r}
-#1# Installeer libraries 
+#1# Install libraries 
 #install.packages(c("rpostgis","raster","rgdal","dplyr","RSAGA","httr","sf","sp","fasterize", "sqldf", #"ncdf4","exactextractr","landscapemetrics"))
 #install.packages("doParallel")
 #install.packages("foreach")
 ```
 
 ```{r}
-#2# Activeer libraries
+#2# Activate libraries
 #library(rpostgis)
 library(raster)
 #library(rgdal)
@@ -40,38 +40,42 @@ library(landscapemetrics)
 library(stringr)
 ```
 
+#Set working directory
 ```{r}
-#setwd("//tsclient/C/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/Input")
+#setwd(".")
 ```
 
 ```{r}
+#If needed you can run on parrallel
 #if parallel 
 #n_cores <- 5  
 #cl <- makeCluster(n_cores)
 #registerDoParallel(cl)
 ```
 
-
 ```{r}
+#specify Land cover map name 
 BBK <- 'BBK_15'
 ```
 
 ```{r}
-#2# datasets inladen
+#3# Load datasets
+#if there are multiple tiles: 
 temp <- tempfile()
 tempd <- tempdir()
-#andere folder zitten en die moet je eerst verplaatsen naar de juiste folder. 
-tempd <- paste0("H:/WP3/Input/BBK/", BBK,"/")
+tempd <- paste0("./Input/BBK/", BBK,"/")
 rasters1 <- list.files(path=file.path(tempd),  pattern="\\.tif$")
 directory1 <- file.path(tempd)
 unlink(tempd) 
 
-adp_0 <- st_read("H:/WP3/Input/Adp/Adp.shp") 
-adp_1 <- st_read("H:/WP3/Input/Adp/Adp_1.shp") 
+#administrative parcel dataset (building + garden) 
+adp_0 <- st_read("./Input/Adp/Adp.shp") 
+adp_1 <- st_read("./Adp/Adp_1.shp") 
 adp <- rbind(adp_0, adp_1)
 rm(adp_0, adp_1)
 
-TWI <- raster('H:/WP3/Input/TWI/TWI_Quinn_vlaanderen_filled_sinksPlanchon.tif')
+#Topographic Wetness Index (TWI)
+TWI <- raster('./Input/TWI/TWI_Quinn_vlaanderen_filled_sinksPlanchon.tif')
 #Q3 bepalen
 #TWI_Flanders_Q3 <- quantile(TWI_Flanders, 0.75)
 #13.9
@@ -81,22 +85,19 @@ TWI_Flanders_max <- 17.5
 TWI_Flanders_min <- minValue(TWI)
 TWI_Flanders_min <- 6.28
 
-#TWI <- raster('G:/WP3/Input/TWI/TWI_Flanders_clipped.tif')
+#TWI <- raster('./Input/TWI/TWI_Flanders_clipped.tif')
 #q_low_TWI <- quantile(TWI, 0.05, na.rm = TRUE)
 #q_high_TWI <- quantile(TWI, 0.95, na.rm = TRUE)
 
-
-#LCZ_Leuven <- raster('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/4. #Projecten/Eva/LCZ/pred_LCZ_100m_modal3x3_v4.tif')
-#LCZ <- raster('C:/Users/u0137615/OneDrive - KU Leuven/Phd GARLOCK/3. #Onderzoek/WP3/Input/lcz_filter_v3.tif')
-
-LST <- raster('H:/WP3/Input/LST/LST_Flanders.tif')
+#Land Surface Temperature
+LST <- raster('./Input/LST/LST_Flanders.tif')
 LST[LST < 0] <- NA
 LST_Flanders_max <- maxValue(LST)
 LST_Flanders_max <- 38.7
 LST_Flanders_min <- minValue(LST)
 LST_Flanders_min <- 24.3
   
-#LST <- raster('G:/WP3/Input/LST/LST_Flanders_clipped.tif')
+#LST <- raster('./Input/LST/LST_Flanders_clipped.tif')
 #q_low_LST <- quantile(LST, 0.05, na.rm = TRUE)
 #q_high_LST <- quantile(LST, 0.95, na.rm = TRUE)
 
@@ -104,9 +105,11 @@ LST_Flanders_min <- 24.3
 #LST_Flanders_Q3 <- quantile(LST_Flanders, 0.75)
 #31.7
 
-Vulnerability <- st_read('I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Input/gardens_vulnerability_quantile_scaled_Flanders.shp')
+#Social Vulnerability dataset
+Vulnerability <- st_read('./Input/gardens_vulnerability_quantile_scaled_Flanders.shp')
 
-exposure <- raster('H:/WP3/Input/Pop/ni_inw_ha_vlaa_2019.tif')
+#Exposure dataset
+exposure <- raster('./Input/Pop/ni_inw_ha_vlaa_2019.tif')
 
 # Define min and max of exposure raster (or across your study area)
 exp_min <- min(values(exposure), na.rm = TRUE)
@@ -114,15 +117,16 @@ exp_min <- 0
 exp_max <- max(values(exposure), na.rm = TRUE)
 exp_max <- 244
 
-#exposure <- raster('G:/WP3/Input/Pop/ni_inw_ha_vlaa_2013.tif')
+#exposure <- raster('./Input/Pop/ni_inw_ha_vlaa_2013.tif')
 #q_low_exp <- quantile(exposure, 0.05, na.rm = TRUE)
 #q_high_exp <- quantile(exposure, 0.95, na.rm = TRUE)
 ```
 
 
 ```{r}
-tuinkaarten <- list.files(path=file.path("H:/WP3/Input/Buffers"),  pattern="\\.gpkg$")
-directory2 <- file.path("H:/WP3/Input/Buffers")
+#Garden map
+tuinkaarten <- list.files(path=file.path("./Input/Buffers"),  pattern="\\.gpkg$")
+directory2 <- file.path("./Input/Buffers")
 
 for(i in 1:length(tuinkaarten)){
   for(k in 1:length(rasters1)){
@@ -134,11 +138,11 @@ for(i in 1:length(tuinkaarten)){
   tuinenkaart <- st_read(file.path(directory2,tuinkaarten[i]))
   
   cities <- str_extract(tuinkaarten[i], ".*(?=ADP)")
-  gbg <- st_read(paste0("H:/WP3/Input/Gbg/", cities,"/gbg.shp"))
+  gbg <- st_read(paste0("./Input/Gbg/", cities,"/gbg.shp")) #building vector map 
   
   #not needed for grouped gardens
   #tuinenkaart <- tuinenkaart %>%
-  #filter(LGK %in% c("Huizen en Tuinen", "Overige bebouwde terreinen", "Overige onbebouwde terreinen"))
+  #filter(LGK %in% c("Huizen en Tuinen", "Overige bebouwde terreinen", "Overige onbebouwde terreinen")) #filter garden parcel map 
 
   r.raster <- raster()
   crs(r.raster) <- CRS("+init=epsg:31370")
@@ -787,7 +791,7 @@ st_write(
   driver = "ESRI Shapefile",
   delete_layer = TRUE
 )
-  #writeOGR(BAF_tuinenkaart, dsn = "I:/KUL-job/Phd GARLOCK/3. Onderzoek/WP3/Processing/Garden metrics" , layer = paste(a,b,"metrics_2015",sep = "."), driver= "ESRI Shapefile", overwrite_layer = TRUE)
+  #writeOGR(BAF_tuinenkaart, dsn = "./Output" , layer = paste(a,b,"metrics_2015",sep = "."), driver= "ESRI Shapefile", overwrite_layer = TRUE)
   print(paste(a,b,"metrics",sep = "."))
   # Set path to the temporary raster folder
   raster_path <- file.path(tempdir(), "raster")
@@ -810,4 +814,5 @@ st_write(
 }
 
 ```
+
 
